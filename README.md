@@ -43,4 +43,4 @@ VideoDigitizerは研究作業を補助するツールです。解析前に、動
 - [使い方](docs/user_guide_ja.md)
 - [配布時の注意](docs/distribution_notes_ja.md)
 - [第三者ソフトウェア](docs/THIRD_PARTY_NOTICES.md)
-
+- [独立開発方針](docs/independent_development_ja.md)
