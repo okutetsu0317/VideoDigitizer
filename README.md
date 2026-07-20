@@ -6,7 +6,7 @@
 
 [最新版のVideoDigitizerをダウンロード](https://github.com/okutetsu0317/VideoDigitizer/releases/latest/download/VideoDigitizer-macos-arm64.dmg)
 
-現在の配布版はApple Silicon搭載Mac向けです。Developer IDで署名し、Appleの公証を受けています。
+現在の配布版はApple Silicon搭載Mac、macOS 15以降向けです。Developer IDで署名し、Appleの公証を受けています。
 
 ## インストール
 
@@ -44,3 +44,4 @@ VideoDigitizerは研究作業を補助するツールです。解析前に、動
 - [配布時の注意](docs/distribution_notes_ja.md)
 - [第三者ソフトウェア](docs/THIRD_PARTY_NOTICES.md)
 - [独立開発方針](docs/independent_development_ja.md)
+- [技術実装の来歴](docs/technical_provenance_ja.md)

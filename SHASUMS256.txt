@@ -1,1 +1,1 @@
-2e0002f63619f8563d57141e91d1ec20bb5aa36a83c36a028a4bb8cbf37383d0  VideoDigitizer-macos-arm64.dmg
+987c9beebb24f9a58bc5204376f54d003fb6e4d6e8dba866829d3672b0c7e680  VideoDigitizer-macos-arm64.dmg
