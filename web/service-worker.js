@@ -1,11 +1,11 @@
-const CACHE_NAME = "video-digitizer-shell-v1.5.0";
+const CACHE_NAME = "video-digitizer-shell-v1.5.1";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css",
+  "./styles.css?v=1.5.1",
   "./frame-source.js",
   "./pwa.js",
-  "./app.js",
+  "./app.js?v=1.5.1",
   "./version.json",
   "./manifest.webmanifest",
   "./icon-192.png",
