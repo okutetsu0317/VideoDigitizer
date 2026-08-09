@@ -4,11 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#20252b" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=1.5.2" />
-    <link rel="icon" href="./icon-192.png?v=1.5.2" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=1.5.2" />
-    <link rel="stylesheet" href="./styles.css?v=1.5.2" />
+    <link rel="manifest" href="./manifest.webmanifest?v=1.6.0" />
+    <link rel="icon" href="./icon-192.png?v=1.6.0" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=1.6.0" />
+    <link rel="stylesheet" href="./styles.css?v=1.6.0" />
   </head>
   <body>
     <main class="app">
@@ -257,7 +258,16 @@
             <button id="applyPointStatus" type="button">状態を設定</button>
             <button id="copyPrevPoint" type="button">前点コピー</button>
             <button id="copyPrevFrame" type="button">前フレームコピー</button>
-            <button id="predictPoint" type="button">前10F予測</button>
+            <button id="predictPoint" type="button">前10F線形予測</button>
+            <div class="ai-actions wide-control">
+              <button id="runPoseAI" type="button">AI姿勢候補</button>
+              <button id="acceptAISuggestion" type="button">候補を採用</button>
+              <button id="acceptAIFrame" type="button">このFを一括採用</button>
+              <button id="rejectAISuggestion" type="button">候補を却下</button>
+              <button id="nextAISuggestion" type="button">次のAI候補</button>
+              <label class="field ai-toggle">候補表示<input id="showAISuggestions" type="checkbox" checked /></label>
+              <div id="aiStatus" class="small ai-status">AI: 未実行</div>
+            </div>
             <label class="field-block">追跡最大移動(px/F)<input id="trackingMaxMove" type="number" min="1" max="1000" step="1" value="50" /></label>
             <label class="field-block">追跡方向<select id="trackingDirection"><option value="any">制限なし</option><option value="horizontal">水平優先</option><option value="vertical">垂直優先</option></select></label>
             <button id="saveTrackingConstraint" type="button">選択点へ制約保存</button>
@@ -399,7 +409,7 @@
               <label class="field-block">前フレームキー<input id="shortcutPrev" type="text" value="ArrowLeft" /></label>
               <label class="field-block">次フレームキー<input id="shortcutNext" type="text" value="ArrowRight" /></label>
               <label class="field-block">前点コピーキー<input id="shortcutCopy" type="text" value="c" /></label>
-              <label class="field-block">予測キー<input id="shortcutPredict" type="text" value="t" /></label>
+              <label class="field-block">線形予測キー<input id="shortcutPredict" type="text" value="t" /></label>
             </div>
             <div class="mini-actions settings-actions">
               <button id="saveWorkspacePreset" type="button">配置を保存</button>
@@ -601,6 +611,7 @@
     </main>
     <script src="./frame-source.js"></script>
     <script src="./pwa.js"></script>
-    <script src="./app.js?v=1.5.2"></script>
+    <script src="./ai-pose.js?v=1.6.0"></script>
+    <script src="./app.js?v=1.6.0"></script>
   </body>
 </html>

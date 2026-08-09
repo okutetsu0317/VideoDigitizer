@@ -83,7 +83,33 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.6.0";
+const AI_SUGGESTION_VERSION = 1;
+const POSE_AI_MODEL = {
+  id: "mediapipe_pose_landmarker_lite",
+  version: "sha256-59929e1d1ee95287",
+  runtime: "mediapipe_tasks_vision_1.0.1",
+};
+const POSE_MARKER_MAP = {
+  "右手先": 20,
+  "右手": 16,
+  "右肘": 14,
+  "右肩": 12,
+  "左手先": 19,
+  "左手": 15,
+  "左肘": 13,
+  "左肩": 11,
+  "右つま先": 32,
+  "右踵": 30,
+  "右足首": 28,
+  "右膝": 26,
+  "右股関節": 24,
+  "左つま先": 31,
+  "左踵": 29,
+  "左足首": 27,
+  "左膝": 25,
+  "左股関節": 23,
+};
 
 function createSessionId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -172,6 +198,13 @@ const els = {
   applyPointStatus: $("applyPointStatus"),
   copyPrevFrame: $("copyPrevFrame"),
   predictPoint: $("predictPoint"),
+  runPoseAI: $("runPoseAI"),
+  acceptAISuggestion: $("acceptAISuggestion"),
+  acceptAIFrame: $("acceptAIFrame"),
+  rejectAISuggestion: $("rejectAISuggestion"),
+  nextAISuggestion: $("nextAISuggestion"),
+  showAISuggestions: $("showAISuggestions"),
+  aiStatus: $("aiStatus"),
   trackingMaxMove: $("trackingMaxMove"),
   trackingDirection: $("trackingDirection"),
   saveTrackingConstraint: $("saveTrackingConstraint"),
@@ -284,6 +317,7 @@ const state = {
   hiddenMarkers: new Set(),
   points: {},
   pointFlags: {},
+  aiSuggestions: {},
   undo: [],
   redo: [],
   audit: [],
@@ -307,6 +341,8 @@ const state = {
   sessionId: createSessionId(),
   appToken: new URLSearchParams(window.location.search).get("token") || "",
   pointRevision: 0,
+  aiSuggestionRevision: 0,
+  aiRuntimeStatus: "未実行",
   tableSnapshot: "",
   progressSnapshot: "",
   projectFileHandle: null,
@@ -394,6 +430,11 @@ function touchPoints() {
   state.pointRevision += 1;
   state.tableSnapshot = "";
   state.progressSnapshot = "";
+  markDirty();
+}
+
+function touchAISuggestions() {
+  state.aiSuggestionRevision += 1;
   markDirty();
 }
 
@@ -983,6 +1024,7 @@ function updateStatus() {
   els.trimStartInput.value = String(state.trimStart);
   els.trimEndInput.value = String(state.trimEnd);
   els.canvas.classList.toggle("is-seeking", state.seeking);
+  updateAIStatus();
   updateVideoInfo();
   updateCompletionInfo();
 }
@@ -1157,6 +1199,7 @@ function updateCompletionInfo() {
 function sourceTag(src, quality = {}) {
   if (src === "manual") return "M";
   if (src === "interp") return "I";
+  if (src === "ai") return "A";
   if (src === "track") {
     if (String(quality.note || "").startsWith("template")) return "T*";
     if (String(quality.note || "").startsWith("hold")) return "T!";
@@ -1231,6 +1274,7 @@ function applySelectedPointStatus() {
 }
 
 function markerColor(point = {}) {
+  if (point.src === "ai") return "#087f8c";
   if (point.src === "track") return "#22863a";
   if (point.src === "interp") return "#8d4bd6";
   return manualPointColor();
@@ -1244,6 +1288,49 @@ function ensureFrame(frame) {
 
 function getPoint(frame, marker) {
   return state.points[String(frame)]?.[marker] ?? null;
+}
+
+function getAISuggestion(frame, marker) {
+  return state.aiSuggestions[String(frame)]?.[marker] ?? null;
+}
+
+function setAISuggestionValue(frame, marker, value) {
+  const key = String(frame);
+  if (!value) {
+    if (!state.aiSuggestions[key]) return;
+    delete state.aiSuggestions[key][marker];
+    if (Object.keys(state.aiSuggestions[key]).length === 0) delete state.aiSuggestions[key];
+    return;
+  }
+  if (!state.aiSuggestions[key]) state.aiSuggestions[key] = {};
+  state.aiSuggestions[key][marker] = structuredClone(value);
+}
+
+function pendingAISuggestion(frame, marker) {
+  const suggestion = getAISuggestion(frame, marker);
+  return suggestion?.status === "pending" ? suggestion : null;
+}
+
+function aiSuggestionCounts() {
+  const counts = { pending: 0, accepted: 0, rejected: 0 };
+  for (const row of Object.values(state.aiSuggestions)) {
+    for (const suggestion of Object.values(row || {})) {
+      if (suggestion && Object.hasOwn(counts, suggestion.status)) counts[suggestion.status] += 1;
+    }
+  }
+  return counts;
+}
+
+function updateAIStatus() {
+  if (!els.aiStatus) return;
+  const counts = aiSuggestionCounts();
+  const current = Object.values(state.aiSuggestions[String(state.frame)] || {})
+    .filter((suggestion) => suggestion?.status === "pending").length;
+  els.aiStatus.textContent = `AI: ${state.aiRuntimeStatus} / 候補 ${counts.pending} (現在F ${current})`;
+  if (els.acceptAISuggestion) els.acceptAISuggestion.disabled = !pendingAISuggestion(state.frame, state.activeMarker);
+  if (els.acceptAIFrame) els.acceptAIFrame.disabled = current === 0;
+  if (els.rejectAISuggestion) els.rejectAISuggestion.disabled = !pendingAISuggestion(state.frame, state.activeMarker);
+  if (els.nextAISuggestion) els.nextAISuggestion.disabled = counts.pending === 0;
 }
 
 function setPoint(frame, marker, point, recordUndo = true) {
@@ -1312,7 +1399,15 @@ function deletePoint(frame, marker, recordUndo = true) {
 
 function applyHistoryItems(item, field) {
   for (const change of item.items || []) {
+    if (item.kind === "suggestions") {
+      setAISuggestionValue(change.frame, change.marker, change[field]);
+      continue;
+    }
     if (item.kind === "compound") {
+      const suggestionField = `${field}Suggestion`;
+      if (Object.hasOwn(change, suggestionField)) {
+        setAISuggestionValue(change.frame, change.marker, change[suggestionField]);
+      }
       setPointFlagValue(change.frame, change.marker, change[`${field}Flag`]);
       const point = change[`${field}Point`];
       if (point) {
@@ -1352,6 +1447,9 @@ function undo() {
   state.redo.push(item);
   recordAudit("undo", { kind: item.kind, count: item.items?.length || 0 });
   touchPoints();
+  if (item.kind === "suggestions" || item.items?.some((change) => Object.hasOwn(change, "prevSuggestion"))) {
+    state.aiSuggestionRevision += 1;
+  }
   setStatus("元に戻しました");
   renderAll();
 }
@@ -1366,6 +1464,9 @@ function redo() {
   state.undo.push(item);
   recordAudit("redo", { kind: item.kind, count: item.items?.length || 0 });
   touchPoints();
+  if (item.kind === "suggestions" || item.items?.some((change) => Object.hasOwn(change, "nextSuggestion"))) {
+    state.aiSuggestionRevision += 1;
+  }
   setStatus("やり直しました");
   renderAll();
 }
@@ -1736,12 +1837,12 @@ function predictCurrentPointFromPreviousFrames() {
   if (!state.ready) return;
   const samples = previousMarkerSamples(state.activeMarker, 10);
   if (samples.length === 0) {
-    setStatus(`${state.activeMarker} の予測に使える前フレーム点がありません`);
+    setStatus(`${state.activeMarker} の線形予測に使える前フレーム点がありません`);
     return;
   }
   const predicted = linearPredict(samples, state.frame);
   if (!predicted) {
-    setStatus(`${state.activeMarker} を予測できませんでした`);
+    setStatus(`${state.activeMarker} を線形予測できませんでした`);
     return;
   }
   const last = samples[samples.length - 1];
@@ -1758,9 +1859,211 @@ function predictCurrentPointFromPreviousFrames() {
   }
   state.selected = { frame: state.frame, marker: state.activeMarker };
   setStatus(perFrameMove > maxMove
-    ? `${state.activeMarker} の予測移動量が上限を超えたため要確認にしました`
-    : `${state.activeMarker} を前${samples.length}点から予測しました。必要なら矢印キーで微修正できます`);
+    ? `${state.activeMarker} の線形予測移動量が上限を超えたため要確認にしました`
+    : `${state.activeMarker} を前${samples.length}点から線形予測しました。必要なら矢印キーで微修正できます`);
   renderAll();
+}
+
+function aiPointFromSuggestion(suggestion) {
+  return {
+    x: normalizeCoordinate(suggestion.x, state.videoWidth - 1),
+    y: normalizeCoordinate(suggestion.y, state.videoHeight - 1),
+    src: "ai",
+    quality: {
+      confidence: Number(suggestion.confidence) || 0,
+      note: "ai_accepted",
+      model_id: suggestion.model_id,
+      model_version: suggestion.model_version,
+      runtime: suggestion.runtime,
+      suggestion_id: suggestion.id,
+      landmark_index: suggestion.landmark_index,
+      generated_at: suggestion.generated_at,
+      accepted_at: new Date().toISOString(),
+    },
+  };
+}
+
+function acceptAISuggestions(entries, label) {
+  const changes = [];
+  let lowConfidence = 0;
+  for (const { frame, marker, suggestion } of entries) {
+    if (!suggestion || suggestion.status !== "pending") continue;
+    const prevPoint = getPoint(frame, marker) ? structuredClone(getPoint(frame, marker)) : null;
+    const prevFlag = pointFlagAt(frame, marker) ? structuredClone(pointFlagAt(frame, marker)) : null;
+    const prevSuggestion = structuredClone(suggestion);
+    const nextPoint = aiPointFromSuggestion(suggestion);
+    const nextSuggestion = {
+      ...suggestion,
+      status: "accepted",
+      accepted_at: nextPoint.quality.accepted_at,
+    };
+    const nextFlag = nextPoint.quality.confidence < 0.65
+      ? { status: "uncertain", updated_at: new Date().toISOString() }
+      : null;
+    if (nextFlag) lowConfidence += 1;
+    ensureFrame(frame)[marker] = nextPoint;
+    setPointFlagValue(frame, marker, nextFlag);
+    setAISuggestionValue(frame, marker, nextSuggestion);
+    changes.push({
+      frame,
+      marker,
+      prevPoint,
+      nextPoint,
+      prevFlag,
+      nextFlag,
+      prevSuggestion,
+      nextSuggestion,
+    });
+  }
+  if (changes.length === 0) {
+    setStatus("採用できるAI候補がありません");
+    return 0;
+  }
+  state.undo.push({ kind: "compound", items: changes });
+  state.redo = [];
+  state.aiSuggestionRevision += 1;
+  recordAudit("accept_ai_suggestions", {
+    count: changes.length,
+    low_confidence: lowConfidence,
+    model_id: POSE_AI_MODEL.id,
+  });
+  touchPoints();
+  state.selected = { frame: changes[0].frame, marker: changes[0].marker };
+  setStatus(`${label}: ${changes.length}点を採用${lowConfidence ? ` / 要確認 ${lowConfidence}点` : ""}`);
+  renderAll();
+  return changes.length;
+}
+
+function acceptCurrentAISuggestion() {
+  const suggestion = pendingAISuggestion(state.frame, state.activeMarker);
+  acceptAISuggestions([{ frame: state.frame, marker: state.activeMarker, suggestion }], `${state.activeMarker}`);
+}
+
+function acceptCurrentFrameAISuggestions() {
+  const entries = state.markers.map((marker) => ({
+    frame: state.frame,
+    marker,
+    suggestion: pendingAISuggestion(state.frame, marker),
+  }));
+  acceptAISuggestions(entries, `${state.frame}F`);
+}
+
+function rejectCurrentAISuggestion() {
+  const suggestion = pendingAISuggestion(state.frame, state.activeMarker);
+  if (!suggestion) {
+    setStatus(`${state.activeMarker} に未確定のAI候補はありません`);
+    return;
+  }
+  const next = { ...suggestion, status: "rejected", rejected_at: new Date().toISOString() };
+  state.undo.push({
+    kind: "suggestions",
+    items: [{ frame: state.frame, marker: state.activeMarker, prev: suggestion, next }],
+  });
+  state.redo = [];
+  setAISuggestionValue(state.frame, state.activeMarker, next);
+  recordAudit("reject_ai_suggestion", {
+    frame: state.frame,
+    marker: state.activeMarker,
+    suggestion_id: suggestion.id,
+  });
+  touchAISuggestions();
+  setStatus(`${state.activeMarker} のAI候補を却下しました`);
+  renderAll();
+}
+
+function pendingAISuggestionLocations() {
+  const locations = [];
+  for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
+    for (let markerIndexValue = 0; markerIndexValue < state.markers.length; markerIndexValue += 1) {
+      const marker = state.markers[markerIndexValue];
+      if (pendingAISuggestion(frame, marker)) locations.push({ frame, marker, markerIndexValue });
+    }
+  }
+  return locations;
+}
+
+function jumpToNextAISuggestion() {
+  const locations = pendingAISuggestionLocations();
+  if (locations.length === 0) {
+    setStatus("未確認のAI候補はありません");
+    return;
+  }
+  const activeIndex = Math.max(0, markerIndex(state.activeMarker));
+  const next = locations.find((item) => item.frame > state.frame
+    || (item.frame === state.frame && item.markerIndexValue > activeIndex)) || locations[0];
+  state.activeMarker = next.marker;
+  state.selected = { frame: next.frame, marker: next.marker };
+  seekFrame(next.frame);
+  renderAll();
+  setStatus(`${next.frame}F ${next.marker}: AI候補を表示しました`);
+}
+
+function createPoseAISuggestion(frame, marker, landmarkIndex, landmark) {
+  const visibility = Number.isFinite(Number(landmark.visibility)) ? Number(landmark.visibility) : 1;
+  const presence = Number.isFinite(Number(landmark.presence)) ? Number(landmark.presence) : 1;
+  return {
+    schema_version: AI_SUGGESTION_VERSION,
+    id: createSessionId(),
+    frame,
+    marker,
+    x: normalizeCoordinate(Number(landmark.x) * (state.videoWidth - 1), state.videoWidth - 1),
+    y: normalizeCoordinate(Number(landmark.y) * (state.videoHeight - 1), state.videoHeight - 1),
+    confidence: Math.max(0, Math.min(1, Math.min(visibility, presence))),
+    visibility,
+    presence,
+    status: "pending",
+    model_id: POSE_AI_MODEL.id,
+    model_version: POSE_AI_MODEL.version,
+    runtime: POSE_AI_MODEL.runtime,
+    landmark_index: landmarkIndex,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+async function runPoseAIForCurrentFrame() {
+  if (!state.ready || state.seeking) {
+    setStatus(state.seeking ? "フレーム移動が終わってからAIを実行してください" : "先に動画を開いてください");
+    return;
+  }
+  if (!globalThis.VideoDigitizerAI?.estimatePose) {
+    setStatus("AI実行モジュールを読み込めませんでした");
+    return;
+  }
+  els.runPoseAI.disabled = true;
+  state.aiRuntimeStatus = "モデル準備中";
+  updateAIStatus();
+  setStatus("端末内でAI姿勢候補を計算しています");
+  try {
+    const result = await globalThis.VideoDigitizerAI.estimatePose(els.frameImage);
+    const landmarks = Array.isArray(result.landmarks) ? result.landmarks : [];
+    let count = 0;
+    for (const [marker, landmarkIndex] of Object.entries(POSE_MARKER_MAP)) {
+      if (!state.markers.includes(marker) || getPoint(state.frame, marker)) continue;
+      const landmark = landmarks[landmarkIndex];
+      if (!landmark || !Number.isFinite(Number(landmark.x)) || !Number.isFinite(Number(landmark.y))) continue;
+      const suggestion = createPoseAISuggestion(state.frame, marker, landmarkIndex, landmark);
+      if (suggestion.confidence < 0.35) continue;
+      setAISuggestionValue(state.frame, marker, suggestion);
+      count += 1;
+    }
+    state.aiRuntimeStatus = `完了 ${Math.round(Number(result.inference_ms) || 0)}ms`;
+    recordAudit("generate_pose_ai_suggestions", {
+      frame: state.frame,
+      count,
+      model_id: POSE_AI_MODEL.id,
+      inference_ms: Number(result.inference_ms) || 0,
+    });
+    touchAISuggestions();
+    setStatus(count
+      ? `${state.frame}F にAI候補を ${count}点生成しました`
+      : "人物または対応する未入力マーカーを検出できませんでした");
+  } catch (error) {
+    state.aiRuntimeStatus = "エラー";
+    setStatus(`AI候補を生成できませんでした: ${error.message}`);
+  } finally {
+    els.runPoseAI.disabled = false;
+    renderAll();
+  }
 }
 
 function nudgeActivePoint(dx, dy) {
@@ -2172,6 +2475,8 @@ function qualityGateIssues() {
   if (unresolved > 0) issues.push({ severity: "error", text: `理由未設定の欠測が ${unresolved} 点あります` });
   if (uncertain > 0) issues.push({ severity: "warning", text: `要確認の点が ${uncertain} 点あります` });
   if (excluded > 0) issues.push({ severity: "info", text: `解析除外が ${excluded} 点あります` });
+  const pendingAI = aiSuggestionCounts().pending;
+  if (pendingAI > 0) issues.push({ severity: "info", text: `未確認のAI候補が ${pendingAI} 点あります` });
   if (state.calibration.enabled && !calibrationTransform()) {
     issues.push({ severity: "error", text: "4点法が有効ですが変換を計算できません" });
   }
@@ -2633,6 +2938,46 @@ function drawPoint(ctx, point, marker) {
   ctx.fillText(marker, x + 9, y - 9);
 }
 
+function drawAISuggestion(ctx, suggestion, marker) {
+  const { x, y } = sourceToCanvas(suggestion);
+  const size = pointSize() + (marker === state.activeMarker ? 4 : 2);
+  ctx.save();
+  ctx.strokeStyle = "#087f8c";
+  ctx.fillStyle = "rgba(230, 247, 248, 0.72)";
+  ctx.lineWidth = marker === state.activeMarker ? 3 : 2;
+  ctx.setLineDash([5, 4]);
+  ctx.beginPath();
+  ctx.arc(x, y, size + 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(x - size, y);
+  ctx.lineTo(x + size, y);
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x, y + size);
+  ctx.stroke();
+  if (marker === state.activeMarker) {
+    const confidence = Math.round((Number(suggestion.confidence) || 0) * 100);
+    ctx.font = "700 13px sans-serif";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "#ffffff";
+    ctx.strokeText(`AI ${confidence}%`, x + size + 7, y - size - 5);
+    ctx.fillStyle = "#075d66";
+    ctx.fillText(`AI ${confidence}%`, x + size + 7, y - size - 5);
+  }
+  ctx.restore();
+}
+
+function drawAISuggestions(ctx) {
+  if (!els.showAISuggestions?.checked) return;
+  const suggestions = state.aiSuggestions[String(state.frame)] || {};
+  for (const [marker, suggestion] of Object.entries(suggestions)) {
+    if (suggestion?.status !== "pending" || !isMarkerVisible(marker)) continue;
+    drawAISuggestion(ctx, suggestion, marker);
+  }
+}
+
 function sourceToCanvas(point) {
   const r = state.drawRect;
   return {
@@ -2826,6 +3171,7 @@ function draw() {
   drawTrail(ctx);
   drawSkeleton(ctx);
   drawCalibrationOverlay(ctx);
+  drawAISuggestions(ctx);
 
   const points = state.points[String(state.frame)] || {};
   for (const [marker, point] of Object.entries(points)) {
@@ -3430,6 +3776,7 @@ function renderAll() {
   const constraint = trackingConstraint(state.activeMarker);
   if (els.trackingMaxMove) els.trackingMaxMove.value = String(constraint.maxMove);
   if (els.trackingDirection) els.trackingDirection.value = constraint.direction;
+  updateAIStatus();
   updateStatus();
   renderMarkers();
   renderMarkerVisibility();
@@ -3523,8 +3870,8 @@ function reviewCandidates() {
     for (const marker of state.markers) {
       const point = getPoint(frame, marker);
       const status = pointStatusAt(frame, marker);
-      if (status === "uncertain" || (point?.src === "track" && Number(point.quality?.confidence || 0) < 0.6)) {
-        candidates.push({ frame, marker, reason: status === "uncertain" ? "要確認" : "低信頼追跡" });
+      if (status === "uncertain" || (["track", "ai"].includes(point?.src) && Number(point.quality?.confidence || 0) < 0.6)) {
+        candidates.push({ frame, marker, reason: status === "uncertain" ? "要確認" : "低信頼候補" });
       }
     }
   }
@@ -4374,7 +4721,7 @@ function digitizeSnapshot() {
   const transform = calibrationTransform();
   const coordinates = digitizeCoordinates(transform);
   return {
-    version: 2,
+    version: 3,
     video: {
       name: state.videoName,
       fps: state.fps,
@@ -4432,6 +4779,7 @@ function digitizeSnapshot() {
     coordinates,
     points: state.points,
     point_flags: state.pointFlags,
+    ai_suggestions: state.aiSuggestions,
     audit_log: state.audit,
   };
 }
@@ -4440,7 +4788,7 @@ function projectPayload() {
   const digitize = digitizeSnapshot();
   return {
     schema: PROJECT_SCHEMA,
-    project_version: 4,
+    project_version: 5,
     saved_at: new Date().toISOString(),
     video_name: state.videoName,
     video_identity: state.videoIdentity,
@@ -4490,6 +4838,7 @@ function projectPayload() {
       trail_length: Math.max(0, Math.round(Number(els.trailInput.value) || 0)),
       trail_mode: els.trailMode.value,
       tracking_max_move: Math.max(1, Number(els.trackingMaxMove?.value) || 50),
+      show_ai_suggestions: els.showAISuggestions.checked,
       workspace: workspaceSettings(),
     },
     digitize,
@@ -4498,6 +4847,7 @@ function projectPayload() {
     // Keep this root field so older project files/tools can still find coordinates.
     points: state.points,
     point_flags: state.pointFlags,
+    ai_suggestions: state.aiSuggestions,
     audit_log: state.audit,
   };
 }
@@ -4694,6 +5044,33 @@ function pointsFromCoordinateRecords(records) {
     };
   }
   return points;
+}
+
+function normalizeAISuggestionStore(store) {
+  if (!store || typeof store !== "object" || Array.isArray(store)) return {};
+  const normalized = {};
+  for (const [frameKey, row] of Object.entries(store)) {
+    const frame = Math.round(Number(frameKey));
+    if (!Number.isFinite(frame) || !row || typeof row !== "object" || Array.isArray(row)) continue;
+    for (const [marker, value] of Object.entries(row)) {
+      const x = Number(value?.x);
+      const y = Number(value?.y);
+      if (!marker || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const status = ["pending", "accepted", "rejected"].includes(value.status) ? value.status : "pending";
+      if (!normalized[String(frame)]) normalized[String(frame)] = {};
+      normalized[String(frame)][marker] = {
+        ...value,
+        schema_version: Number(value.schema_version) || AI_SUGGESTION_VERSION,
+        frame,
+        marker,
+        x,
+        y,
+        confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0)),
+        status,
+      };
+    }
+  }
+  return normalized;
 }
 
 function normalizeCalibrationPoints(points, fileName = "") {
@@ -4947,11 +5324,14 @@ function loadProject(file) {
       state.pointFlags = savedPointFlags && typeof savedPointFlags === "object" && !Array.isArray(savedPointFlags)
         ? savedPointFlags
         : {};
+      state.aiSuggestions = normalizeAISuggestionStore(digitize.ai_suggestions || payload.ai_suggestions || {});
+      state.aiRuntimeStatus = Object.keys(state.aiSuggestions).length ? "保存データ読込" : "未実行";
       const savedAudit = digitize.audit_log || payload.audit_log || [];
       state.audit = Array.isArray(savedAudit) ? savedAudit.slice(-20000) : [];
       state.undo = [];
       state.redo = [];
       state.pointRevision += 1;
+      state.aiSuggestionRevision += 1;
       state.tableSnapshot = "";
       state.progressSnapshot = "";
       writeMetadata(payload.metadata || {});
@@ -5031,6 +5411,7 @@ function loadProject(file) {
         els.trailInput.value = String(Math.max(0, Math.round(Number(payload.ui_settings.trail_length) || 0)));
         els.trailMode.value = payload.ui_settings.trail_mode || "active";
         els.trackingMaxMove.value = String(Math.max(1, Number(payload.ui_settings.tracking_max_move) || 50));
+        els.showAISuggestions.checked = payload.ui_settings.show_ai_suggestions !== false;
         applyWorkspaceSettings(payload.ui_settings.workspace || {});
       }
       updateZoomToggleButton();
@@ -5434,6 +5815,15 @@ els.shutdownApp.addEventListener("click", shutdownApp);
 els.copyPrevPoint.addEventListener("click", copyPreviousPoint);
 els.copyPrevFrame.addEventListener("click", copyPreviousFramePoints);
 els.predictPoint.addEventListener("click", predictCurrentPointFromPreviousFrames);
+els.runPoseAI.addEventListener("click", runPoseAIForCurrentFrame);
+els.acceptAISuggestion.addEventListener("click", acceptCurrentAISuggestion);
+els.acceptAIFrame.addEventListener("click", acceptCurrentFrameAISuggestions);
+els.rejectAISuggestion.addEventListener("click", rejectCurrentAISuggestion);
+els.nextAISuggestion.addEventListener("click", jumpToNextAISuggestion);
+els.showAISuggestions.addEventListener("change", () => {
+  markDirty();
+  draw();
+});
 els.nextReviewPoint.addEventListener("click", jumpToNextReviewPoint);
 els.saveTrackingConstraint.addEventListener("click", saveTrackingConstraint);
 els.cancelJob.addEventListener("click", () => {

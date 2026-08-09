@@ -11,6 +11,8 @@
   --manual: #d9531e;
   --track: #22863a;
   --interp: #8d4bd6;
+  --ai: #087f8c;
+  --ai-soft: #e6f7f8;
   --side-width: 360px;
 }
 
@@ -638,6 +640,32 @@ button:hover,
 
 .wide-control {
   grid-column: 1 / -1;
+}
+
+.ai-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #9ccfd3;
+  border-left: 3px solid var(--ai);
+  background: var(--ai-soft);
+}
+
+.ai-actions button:first-child {
+  border-color: var(--ai);
+  color: #075d66;
+  font-weight: 700;
+}
+
+.ai-toggle {
+  justify-content: center;
+  min-height: 34px;
+}
+
+.ai-status {
+  grid-column: 1 / -1;
+  color: #075d66;
 }
 
 .field-block select {

@@ -13,6 +13,7 @@ VideoDigitizerのmacOS配布物には、以下の第三者ソフトウェアが�
 | OpenSSL (`libssl` / `libcrypto`) | 3.4.0 | `third_party_licenses/OpenSSL-LICENSE.txt` |
 | XZ Utils (`liblzma`のみ) | 5.6.3 | `third_party_licenses/XZ-COPYING.txt`, `third_party_licenses/XZ-COPYING-0BSD.txt` |
 | mpdecimal (`libmpdec`) | 4.0.0 | `third_party_licenses/mpdecimal-COPYRIGHT.txt` |
+| MediaPipe Tasks Vision / Pose Landmarker Lite | 1.0.1 / 2026-05取得 | `third_party_licenses/MediaPipe-Apache-2.0.txt` |
 
 VideoDigitizerは、上記プロジェクトからの公認、提携、保証を受けるものではありません。
 
