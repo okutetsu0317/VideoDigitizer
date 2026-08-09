@@ -1,0 +1,606 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#20252b" />
+    <title>動画デジタイズ</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon-192.png" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="file-group">
+          <button id="openVideoButton" type="button">動画を開く</button>
+          <input id="videoFile" class="hidden-file-input" type="file" accept="video/*" />
+          <label class="file-button">
+            プロジェクト読込
+            <input id="projectFile" type="file" accept="application/json,.json,.vdproj" />
+          </label>
+          <label class="file-button">
+            4点法読込
+            <input id="calibrationFile" type="file" accept=".json,.csv,.tsv,.txt,text/*,application/json" />
+          </label>
+          <label class="file-button">
+            時刻CSV
+            <input id="timestampFile" type="file" accept=".csv,.tsv,.txt,text/*" />
+          </label>
+        </div>
+
+        <div class="controls">
+          <label class="field">
+            FPS
+            <input id="fpsInput" type="number" min="1" max="240" step="0.001" value="30" />
+          </label>
+          <label class="field">
+            自動送り
+            <input id="autoAdvance" type="checkbox" checked />
+          </label>
+          <label class="field">
+            打点後
+            <select id="advanceMode">
+              <option value="frame" selected>次フレーム</option>
+              <option value="marker-frame">次点→次フレーム</option>
+              <option value="marker">次点</option>
+            </select>
+          </label>
+          <label class="field">
+            送り幅
+            <input id="stepInput" type="number" min="1" step="1" value="1" />
+          </label>
+          <label class="field">
+            座標桁
+            <input id="coordDecimals" type="number" min="0" max="3" step="1" value="1" />
+          </label>
+          <button id="zoomToggleButton" class="toggle-button active" type="button" aria-pressed="true">
+            ズーム ON
+          </button>
+          <input id="zoomEnabled" class="hidden-file-input" type="checkbox" checked />
+          <label class="field">
+            倍率
+            <select id="zoomScale">
+              <option value="2">2x</option>
+              <option value="3">3x</option>
+              <option value="4" selected>4x</option>
+              <option value="6">6x</option>
+              <option value="8">8x</option>
+            </select>
+          </label>
+          <label class="field">
+            ズームサイズ
+            <input id="zoomLensSize" type="number" min="120" max="360" step="10" value="220" />
+          </label>
+          <label class="field">
+            表示品質
+            <select id="frameQuality">
+              <option value="jpeg" selected>高速</option>
+              <option value="png">高画質</option>
+            </select>
+          </label>
+          <label class="field">
+            十字
+            <select id="cursorGuideMode">
+              <option value="cross" selected>十字</option>
+              <option value="circle">円</option>
+              <option value="off">なし</option>
+            </select>
+          </label>
+          <label class="field">
+            軌跡
+            <input id="trailInput" type="number" min="0" max="300" step="1" value="30" />
+          </label>
+          <label class="field">
+            軌跡表示
+            <select id="trailMode">
+              <option value="active" selected>選択点</option>
+              <option value="side">同側</option>
+              <option value="all">全点</option>
+              <option value="off">非表示</option>
+            </select>
+          </label>
+          <label class="field">
+            骨格線
+            <input id="skeletonEnabled" type="checkbox" checked />
+          </label>
+          <label class="field">
+            点サイズ
+            <input id="pointSize" type="number" min="2" max="16" step="1" value="6" />
+          </label>
+          <label class="field">
+            線幅
+            <input id="lineWidth" type="number" min="1" max="8" step="1" value="2" />
+          </label>
+          <label class="field color-field">
+            点色
+            <input id="manualPointColor" type="color" value="#d9531e" />
+          </label>
+          <label class="field">
+            開始
+            <input id="trimStartInput" type="number" min="0" step="1" value="0" />
+          </label>
+          <button id="setTrimStart" type="button">現在を開始</button>
+          <label class="field">
+            終了
+            <input id="trimEndInput" type="number" min="0" step="1" value="0" />
+          </label>
+          <button id="setTrimEnd" type="button">現在を終了</button>
+        </div>
+
+        <div class="actions">
+          <button id="saveProject" type="button">プロジェクト保存</button>
+          <button id="overwriteProject" type="button">上書き保存</button>
+          <button id="saveProjectPackage" type="button">パッケージ保存</button>
+          <button id="exportCsv" type="button">CSV出力</button>
+          <button id="undoBtn" type="button">元に戻す</button>
+          <button id="redoBtn" type="button">やり直す</button>
+          <button id="shutdownApp" class="danger-button" type="button">アプリ終了</button>
+        </div>
+      </header>
+
+      <section class="statusbar" aria-live="polite">
+        <div>
+          <strong id="videoName">未選択</strong>
+          <span id="dirtyMark"></span>
+        </div>
+        <div id="frameInfo">フレーム 0 / 0</div>
+        <div id="markerInfo">マーカー 右手先</div>
+        <div id="appMode" class="mode-indicator">処理: 確認中</div>
+        <div id="statusText">準備完了</div>
+      </section>
+
+      <section class="infobar">
+        <div id="videoInfo">動画情報: 未選択</div>
+        <div id="resolutionInfo">座標: 元動画解像度基準</div>
+      </section>
+
+      <nav class="view-tabs" aria-label="表示切替">
+        <button id="digitizeTab" class="active" type="button">デジタイズ</button>
+        <button id="analysisTab" type="button">分析</button>
+      </nav>
+
+      <section id="digitizeWorkspace" class="workspace">
+        <div class="viewer">
+          <img id="frameImage" alt="" />
+          <canvas id="videoCanvas"></canvas>
+          <div id="activeMarkerOverlay" class="active-marker-overlay">右手先</div>
+        </div>
+
+        <aside class="side">
+          <section class="panel">
+            <h2>動画情報</h2>
+            <dl id="videoInfoPanel" class="info-list"></dl>
+          </section>
+
+          <section class="panel">
+            <h2>ズーム</h2>
+            <div class="small">動画キャンバス上でカーソル周辺を拡大します</div>
+            <div id="cursorInfo" class="small">カーソル: -</div>
+            <div id="pointInfo" class="small">選択点: -</div>
+          </section>
+
+          <section class="panel marker-panel">
+            <div class="panel-title-row">
+              <h2>マーカー</h2>
+              <button id="applyMarkers" type="button">反映</button>
+            </div>
+            <div class="marker-template-row">
+              <select id="markerTemplate">
+                <option value="">テンプレート</option>
+                <option value="standard_23">標準23点</option>
+                <option value="basic_lower">下肢中心</option>
+                <option value="basic_upper">上肢中心</option>
+              </select>
+              <button id="applyMarkerTemplate" type="button">読込</button>
+              <button id="saveMarkerTemplate" type="button">現在を保存</button>
+            </div>
+            <textarea id="markerText" spellcheck="false">右手先
+右手
+右肘
+右肩
+左手先
+左手
+左肘
+左肩
+右つま先
+右足
+右踵
+右足首
+右膝
+右股関節
+左つま先
+左足
+左踵
+左足首
+左膝
+左股関節
+胸骨上縁
+耳珠点
+頭頂</textarea>
+            <div id="markerButtons" class="marker-buttons"></div>
+            <div class="panel-title-row marker-display-title">
+              <h3>表示</h3>
+              <div class="mini-actions">
+                <button id="showAllMarkers" type="button">全表示</button>
+                <button id="showActiveMarker" type="button">選択のみ</button>
+              </div>
+            </div>
+            <div class="marker-group-actions">
+              <button id="showRightMarkers" type="button">右側</button>
+              <button id="showLeftMarkers" type="button">左側</button>
+              <button id="showTrunkMarkers" type="button">体幹</button>
+              <button id="showUpperMarkers" type="button">上肢</button>
+              <button id="showLowerMarkers" type="button">下肢</button>
+            </div>
+            <div id="markerVisibility" class="marker-visibility"></div>
+            <details class="inline-details">
+              <summary>骨格接続</summary>
+              <textarea id="skeletonText" class="compact-textarea" spellcheck="false"></textarea>
+              <button id="applySkeleton" type="button">骨格線を反映</button>
+            </details>
+          </section>
+
+          <section class="panel compact-actions">
+            <label class="field-block wide-control">
+              選択点の状態
+              <select id="pointStatus">
+                <option value="valid">通常</option>
+                <option value="uncertain">要確認</option>
+                <option value="occluded">遮蔽</option>
+                <option value="out_of_frame">画面外</option>
+                <option value="unidentifiable">判別不能</option>
+                <option value="excluded">解析除外</option>
+              </select>
+            </label>
+            <button id="applyPointStatus" type="button">状態を設定</button>
+            <button id="copyPrevPoint" type="button">前点コピー</button>
+            <button id="copyPrevFrame" type="button">前フレームコピー</button>
+            <button id="predictPoint" type="button">前10F予測</button>
+            <label class="field-block">追跡最大移動(px/F)<input id="trackingMaxMove" type="number" min="1" max="1000" step="1" value="50" /></label>
+            <label class="field-block">追跡方向<select id="trackingDirection"><option value="any">制限なし</option><option value="horizontal">水平優先</option><option value="vertical">垂直優先</option></select></label>
+            <button id="saveTrackingConstraint" type="button">選択点へ制約保存</button>
+            <button id="nextReviewPoint" type="button">要確認へ移動</button>
+            <label class="field-block">
+              補間方法
+              <select id="interpolationMethod">
+                <option value="linear" selected>線形</option>
+                <option value="hold">前値保持</option>
+                <option value="nearest">近い点</option>
+              </select>
+            </label>
+            <button id="previewInterpolation" type="button">補間プレビュー</button>
+            <button id="interpMarker" type="button">選択マーカーを補間</button>
+            <button id="interpAll" type="button">全マーカーを補間</button>
+            <button id="clearDerived" type="button">派生点を消す</button>
+            <div id="jobStatus" class="small wide-control">処理: 待機中</div>
+            <button id="cancelJob" type="button" disabled>処理を中止</button>
+          </section>
+
+          <details class="panel metadata-panel">
+            <summary>メタデータ</summary>
+            <div class="metadata-grid">
+              <label class="field-block">
+                被験者ID
+                <input id="metaSubject" type="text" autocomplete="off" />
+              </label>
+              <label class="field-block">
+                試技名
+                <input id="metaTrial" type="text" autocomplete="off" />
+              </label>
+              <label class="field-block">
+                解析者
+                <input id="metaAnalyst" type="text" autocomplete="off" />
+              </label>
+              <label class="field-block">
+                カメラ
+                <input id="metaCamera" type="text" autocomplete="off" />
+              </label>
+              <label class="field-block">
+                スケール
+                <input id="metaScale" type="text" placeholder="例: 1 px = 2 mm" autocomplete="off" />
+              </label>
+              <label class="field-block">
+                座標系
+                <input id="metaOrigin" type="text" placeholder="例: 左上原点" autocomplete="off" />
+              </label>
+              <label class="field-block wide">
+                メモ
+                <textarea id="metaNotes" spellcheck="false"></textarea>
+              </label>
+              <label class="field-block">原点X<input id="axisOriginX" type="number" step="0.001" value="0" /></label>
+              <label class="field-block">原点Y<input id="axisOriginY" type="number" step="0.001" value="0" /></label>
+              <label class="field-block">X軸<select id="axisXDirection"><option value="right">右向き正</option><option value="left">左向き正</option></select></label>
+              <label class="field-block">Y軸<select id="axisYDirection"><option value="down">下向き正</option><option value="up">上向き正</option></select></label>
+            </div>
+          </details>
+
+          <details class="panel calibration-panel">
+            <summary>4点法 実長換算</summary>
+            <div class="calibration-real-head">
+              <label class="field-block">
+                有効化
+                <input id="calibEnabled" type="checkbox" />
+              </label>
+              <label class="field-block">
+                動画上表示
+                <input id="calibOverlayEnabled" type="checkbox" checked />
+              </label>
+              <label class="field-block">
+                単位
+                <input id="calibUnit" type="text" value="m" autocomplete="off" />
+              </label>
+              <span id="calibStatus" class="small">4点法: 未設定</span>
+            </div>
+            <div class="calibration-real-grid">
+              <label class="field-block">
+                P1 X
+                <input id="calibRealX1" type="number" step="0.000001" value="0" />
+              </label>
+              <label class="field-block">
+                P1 Y
+                <input id="calibRealY1" type="number" step="0.000001" value="0" />
+              </label>
+              <label class="field-block">
+                P2 X
+                <input id="calibRealX2" type="number" step="0.000001" value="1" />
+              </label>
+              <label class="field-block">
+                P2 Y
+                <input id="calibRealY2" type="number" step="0.000001" value="0" />
+              </label>
+              <label class="field-block">
+                P3 X
+                <input id="calibRealX3" type="number" step="0.000001" value="1" />
+              </label>
+              <label class="field-block">
+                P3 Y
+                <input id="calibRealY3" type="number" step="0.000001" value="1" />
+              </label>
+              <label class="field-block">
+                P4 X
+                <input id="calibRealX4" type="number" step="0.000001" value="0" />
+              </label>
+              <label class="field-block">
+                P4 Y
+                <input id="calibRealY4" type="number" step="0.000001" value="1" />
+              </label>
+            </div>
+            <h3 class="subhead">検証点</h3>
+            <div class="calibration-real-grid">
+              <label class="field-block">画像X<input id="calibCheckPixelX" type="number" step="0.001" /></label>
+              <label class="field-block">画像Y<input id="calibCheckPixelY" type="number" step="0.001" /></label>
+              <label class="field-block">実長X<input id="calibCheckRealX" type="number" step="0.000001" /></label>
+              <label class="field-block">実長Y<input id="calibCheckRealY" type="number" step="0.000001" /></label>
+            </div>
+            <button id="validateCalibration" type="button">換算誤差を確認</button>
+            <div id="calibrationValidation" class="small">検証点: 未設定</div>
+            <h3 class="subhead">レンズ歪み補正</h3>
+            <label class="field-block">有効化<input id="lensEnabled" type="checkbox" /></label>
+            <div class="calibration-real-grid lens-grid">
+              <label class="field-block">fx<input id="lensFx" type="number" step="0.001" /></label>
+              <label class="field-block">fy<input id="lensFy" type="number" step="0.001" /></label>
+              <label class="field-block">cx<input id="lensCx" type="number" step="0.001" /></label>
+              <label class="field-block">cy<input id="lensCy" type="number" step="0.001" /></label>
+              <label class="field-block">k1<input id="lensK1" type="number" step="0.000001" value="0" /></label>
+              <label class="field-block">k2<input id="lensK2" type="number" step="0.000001" value="0" /></label>
+              <label class="field-block">p1<input id="lensP1" type="number" step="0.000001" value="0" /></label>
+              <label class="field-block">p2<input id="lensP2" type="number" step="0.000001" value="0" /></label>
+            </div>
+            <div id="timingStatus" class="small">時刻: 固定FPSとして計算</div>
+          </details>
+
+          <details class="panel settings-panel">
+            <summary>操作・配布設定</summary>
+            <div class="metadata-grid">
+              <label class="field-block">サイド幅(px)<input id="workspaceSideWidth" type="number" min="280" max="620" step="10" value="360" /></label>
+              <label class="field-block">密度<select id="workspaceDensity"><option value="normal">標準</option><option value="compact">コンパクト</option></select></label>
+              <label class="field-block">前フレームキー<input id="shortcutPrev" type="text" value="ArrowLeft" /></label>
+              <label class="field-block">次フレームキー<input id="shortcutNext" type="text" value="ArrowRight" /></label>
+              <label class="field-block">前点コピーキー<input id="shortcutCopy" type="text" value="c" /></label>
+              <label class="field-block">予測キー<input id="shortcutPredict" type="text" value="t" /></label>
+            </div>
+            <div class="mini-actions settings-actions">
+              <button id="saveWorkspacePreset" type="button">配置を保存</button>
+              <button id="loadWorkspacePreset" type="button">配置を復元</button>
+              <button id="downloadDiagnostics" type="button">診断情報</button>
+              <button id="checkUpdates" type="button">更新確認</button>
+            </div>
+            <div id="appVersion" class="small">Version -</div>
+          </details>
+        </aside>
+      </section>
+
+      <section id="digitizeTimeline" class="timeline">
+        <div class="timeline-head">
+          <button id="prevFrame" type="button">前</button>
+          <input id="frameSlider" type="range" min="0" max="0" value="0" />
+          <button id="nextFrame" type="button">次</button>
+          <div class="timeline-tools">
+            <span id="completionInfo">入力 0 / 0</span>
+            <button id="prevMissingPoint" type="button">前欠測</button>
+            <button id="nextMissingPoint" type="button">次欠測</button>
+            <button id="nextActiveMissing" type="button">選択点の欠測</button>
+            <button id="nextIncompleteFrame" type="button">未完了フレーム</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="pointTable"></table>
+        </div>
+      </section>
+
+      <section id="analysisView" class="analysis-view hidden">
+        <section class="panel analysis-panel">
+          <div class="panel-title-row">
+            <h2>入力サマリー</h2>
+            <div class="mini-actions">
+              <button id="exportSummaryCsv" type="button">サマリーCSV</button>
+              <button id="exportRealCsv" type="button">実長CSV</button>
+              <button id="exportReportHtml" type="button">レポートHTML</button>
+              <button id="saveProtocol" type="button">設定保存</button>
+              <button id="loadProtocol" type="button">設定読込</button>
+              <button id="restoreAutosave" type="button">自動保存復元</button>
+            </div>
+          </div>
+          <dl id="analysisSummary" class="analysis-summary"></dl>
+          <div class="analysis-subtitle">
+            <h3>品質チェック</h3>
+            <button id="runQualityGate" type="button">出力前チェック</button>
+          </div>
+          <div id="qualityGateResult" class="quality-gate-result">未実行</div>
+          <table class="analysis-table">
+            <thead>
+              <tr>
+                <th>項目</th>
+                <th>内容</th>
+              </tr>
+            </thead>
+            <tbody id="qualityTableBody"></tbody>
+          </table>
+          <div class="analysis-subtitle">
+            <h3>欠測マップ</h3>
+          </div>
+          <div id="missingHeatmap" class="missing-heatmap"></div>
+        </section>
+
+        <section class="panel analysis-panel">
+          <div class="panel-title-row">
+            <h2>イベント</h2>
+            <div class="mini-actions">
+              <button id="addEventMarker" type="button">現在フレームを追加</button>
+              <button id="exportAnalysisCsv" type="button">分析CSV</button>
+            </div>
+          </div>
+          <div class="analysis-controls">
+            <label class="field-block">
+              イベント名
+              <input id="eventName" type="text" value="接地" autocomplete="off" />
+            </label>
+          </div>
+          <table class="analysis-table">
+            <thead>
+              <tr>
+                <th>名前</th>
+                <th>Frame</th>
+                <th>Time(s)</th>
+                <th>前との差(s)</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="eventTableBody"></tbody>
+          </table>
+          <div class="analysis-subtitle">
+            <h3>イベント区間</h3>
+          </div>
+          <table class="analysis-table">
+            <thead>
+              <tr>
+                <th>区間</th>
+                <th>Frame</th>
+                <th>Time(s)</th>
+              </tr>
+            </thead>
+            <tbody id="eventIntervalTableBody"></tbody>
+          </table>
+        </section>
+
+        <section class="panel analysis-panel">
+          <h2>現在フレームの計測</h2>
+          <div class="analysis-frame-controls">
+            <button id="analysisPrevFrame" type="button">前</button>
+            <input id="analysisFrameSlider" type="range" min="0" max="0" value="0" />
+            <button id="analysisNextFrame" type="button">次</button>
+            <label class="field-block compact-field">
+              分析Frame
+              <input id="analysisFrameInput" type="number" min="0" step="1" value="0" />
+            </label>
+            <button id="analysisUseDigitizeFrame" type="button">デジタイズ位置へ</button>
+          </div>
+          <div class="analysis-controls three-cols">
+            <label class="field-block">
+              距離 A
+              <select id="distanceMarkerA"></select>
+            </label>
+            <label class="field-block">
+              距離 B
+              <select id="distanceMarkerB"></select>
+            </label>
+            <div id="distanceResult" class="metric-result">距離: -</div>
+          </div>
+          <div class="analysis-controls four-cols">
+            <label class="field-block">
+              角度テンプレート
+              <select id="angleTemplate">
+                <option value="">手動選択</option>
+                <option value="right_knee">右膝角度</option>
+                <option value="left_knee">左膝角度</option>
+                <option value="right_hip">右股関節角度</option>
+                <option value="left_hip">左股関節角度</option>
+                <option value="right_elbow">右肘角度</option>
+                <option value="left_elbow">左肘角度</option>
+                <option value="trunk">体幹角度</option>
+              </select>
+            </label>
+            <label class="field-block">
+              角度 A
+              <select id="angleMarkerA"></select>
+            </label>
+            <label class="field-block">
+              角度 B
+              <select id="angleMarkerB"></select>
+            </label>
+            <label class="field-block">
+              角度 C
+              <select id="angleMarkerC"></select>
+            </label>
+            <div id="angleResult" class="metric-result">角度: -</div>
+          </div>
+          <div id="analysisStatus" class="small">4点法実長換算: -</div>
+          <div class="panel-title-row analysis-subtitle">
+            <h3>キネマティクス</h3>
+            <button id="exportKinematicsCsv" type="button">時系列CSV</button>
+          </div>
+          <div class="analysis-controls three-cols">
+            <label class="field-block">
+              対象マーカー
+              <select id="kinematicsMarker"></select>
+            </label>
+            <label class="field-block">
+              平滑化
+              <select id="smoothingMode">
+                <option value="none">なし</option>
+                <option value="moving">移動平均</option>
+              </select>
+            </label>
+            <label class="field-block">
+              窓
+              <input id="smoothingWindow" type="number" min="1" max="21" step="2" value="5" />
+            </label>
+            <div id="kinematicsResult" class="metric-result wide-metric">速度/加速度: -</div>
+          </div>
+        </section>
+
+        <section class="panel analysis-panel comparison-panel">
+          <h2>比較・再測定</h2>
+          <div class="mini-actions comparison-actions">
+            <label class="file-button">比較動画<input id="comparisonVideoFile" type="file" accept="video/*" /></label>
+            <label class="file-button">再測定JSON<input id="reliabilityProjectFile" type="file" accept="application/json,.json" /></label>
+            <button id="addTrialSnapshot" type="button">試技一覧へ追加</button>
+          </div>
+          <label class="field-block">同期オフセット(F)<input id="comparisonOffset" type="number" step="1" value="0" /></label>
+          <div class="comparison-grid">
+            <figure><img id="comparisonPrimaryImage" alt="基準動画" /><figcaption>基準</figcaption></figure>
+            <figure><img id="comparisonSecondaryImage" alt="比較動画" /><figcaption id="comparisonCaption">比較動画未選択</figcaption></figure>
+          </div>
+          <div id="reliabilityResult" class="quality-gate-result">再測定JSONを選択すると一致度を計算します</div>
+          <div class="analysis-subtitle"><h3>試技一覧</h3></div>
+          <div id="trialList" class="trial-list"></div>
+        </section>
+      </section>
+    </main>
+    <script src="./frame-source.js"></script>
+    <script src="./pwa.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
