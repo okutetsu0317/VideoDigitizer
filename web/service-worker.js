@@ -12,14 +12,6 @@ const APP_SHELL = [
   "./manifest.webmanifest?v=1.6.0",
   "./icon-192.png?v=1.6.0",
   "./icon-512.png?v=1.6.0",
-  "./vendor/mediapipe/vision_bundle.mjs",
-  "./vendor/mediapipe/pose_landmarker_lite.task",
-  "./vendor/mediapipe/wasm/vision_wasm_internal.js",
-  "./vendor/mediapipe/wasm/vision_wasm_internal.wasm",
-  "./vendor/mediapipe/wasm/vision_wasm_module_internal.js",
-  "./vendor/mediapipe/wasm/vision_wasm_module_internal.wasm",
-  "./vendor/mediapipe/wasm/vision_wasm_nosimd_internal.js",
-  "./vendor/mediapipe/wasm/vision_wasm_nosimd_internal.wasm",
 ];
 
 self.addEventListener("install", (event) => {
