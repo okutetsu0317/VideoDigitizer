@@ -550,7 +550,8 @@ button:hover,
 }
 
 #frameImage,
-#videoCanvas {
+#videoCanvas,
+#cursorCanvas {
   display: block;
   position: absolute;
   inset: 0;
@@ -566,6 +567,10 @@ button:hover,
 
 #videoCanvas {
   cursor: crosshair;
+}
+
+#cursorCanvas {
+  pointer-events: none;
 }
 
 #videoCanvas.is-seeking {

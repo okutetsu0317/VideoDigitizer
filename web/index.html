@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-perf1" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-perf1" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-perf1" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-perf1" />
   </head>
   <body>
     <main class="app">
@@ -123,8 +123,9 @@
 
       <section id="digitizeWorkspace" class="workspace">
         <div class="viewer">
-          <img id="frameImage" alt="" />
+          <canvas id="frameImage" aria-label="動画フレーム"></canvas>
           <canvas id="videoCanvas"></canvas>
+          <canvas id="cursorCanvas" aria-hidden="true"></canvas>
           <div id="activeMarkerOverlay" class="active-marker-overlay">右手先</div>
         </div>
 
@@ -605,10 +606,10 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js"></script>
-    <script src="./pwa.js"></script>
-    <script src="./ai-pose.js?v=2.2.0"></script>
-    <script src="./point-tracker.js?v=2.2.0"></script>
-    <script src="./app.js?v=2.2.0"></script>
+    <script src="./frame-source.js?v=2.2.0-perf1"></script>
+    <script src="./pwa.js?v=2.2.0-perf1"></script>
+    <script src="./ai-pose.js?v=2.2.0-perf1"></script>
+    <script src="./point-tracker.js?v=2.2.0-perf1"></script>
+    <script src="./app.js?v=2.2.0-perf1"></script>
   </body>
 </html>

@@ -175,12 +175,22 @@
     }
 
     getFrameBlob(frame, format, timeSec) {
-      const task = () => this._decodeFrame(frame, format, timeSec);
+      const task = () => this._decodeFrameBlob(frame, format, timeSec);
       this.queue = this.queue.catch(() => {}).then(task);
       return this.queue;
     }
 
-    async _decodeFrame(frame, format, timeSec) {
+    getFrameImage(frame, timeSec) {
+      if (typeof createImageBitmap !== "function") return null;
+      const task = async () => {
+        await this._seekToFrame(frame, timeSec);
+        return createImageBitmap(this.video);
+      };
+      this.queue = this.queue.catch(() => {}).then(task);
+      return this.queue;
+    }
+
+    async _seekToFrame(frame, timeSec) {
       if (this.closed) throw new Error("動画は閉じられています");
       const frameDuration = 1 / this.fps;
       const requestedTime = Number.isFinite(Number(timeSec))
@@ -194,28 +204,16 @@
         this.video.currentTime = targetTime;
         await seeked;
       }
+      if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        await waitForEvent(this.video, "loadeddata");
+      }
+    }
 
-      await this._waitForPresentedFrame();
+    async _decodeFrameBlob(frame, format, timeSec) {
+      await this._seekToFrame(frame, timeSec);
       this.context.imageSmoothingEnabled = false;
       this.context.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
       return canvasToBlob(this.canvas, format);
-    }
-
-    _waitForPresentedFrame() {
-      if (typeof this.video.requestVideoFrameCallback !== "function") {
-        return new Promise((resolve) => requestAnimationFrame(resolve));
-      }
-      return new Promise((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeoutId);
-          resolve();
-        };
-        const timeoutId = setTimeout(finish, 500);
-        this.video.requestVideoFrameCallback(finish);
-      });
     }
 
     close() {

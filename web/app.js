@@ -134,6 +134,7 @@ const els = {
   calibrationFile: $("calibrationFile"),
   timestampFile: $("timestampFile"),
   canvas: $("videoCanvas"),
+  cursorCanvas: $("cursorCanvas"),
   digitizeTab: $("digitizeTab"),
   analysisTab: $("analysisTab"),
   digitizeWorkspace: $("digitizeWorkspace"),
@@ -368,6 +369,10 @@ const state = {
   frameCacheToken: 0,
   frameCache: new Map(),
   frameRequests: new Map(),
+  prefetchTimer: 0,
+  seekDirection: 1,
+  trimInputTimer: 0,
+  cursorDrawRequest: 0,
   videoWidth: 0,
   videoHeight: 0,
   pendingTrim: null,
@@ -469,6 +474,11 @@ function updateAppMode() {
   if (!els.appMode) return;
   els.appMode.textContent = usesBrowserFrameSource() ? "処理: ブラウザ内" : "処理: ローカルアプリ";
   els.shutdownApp.hidden = usesBrowserFrameSource();
+}
+
+function frameDisplayMode() {
+  if (usesBrowserFrameSource() && typeof createImageBitmap === "function") return "原寸直接表示";
+  return frameQuality() === "png" ? "PNG 高画質" : "JPEG 高速";
 }
 
 function markDirty() {
@@ -1072,8 +1082,8 @@ function updateStatus() {
   }
   els.trimStartInput.max = String(Math.max(0, state.frameCount - 1));
   els.trimEndInput.max = String(Math.max(0, state.frameCount - 1));
-  els.trimStartInput.value = String(state.trimStart);
-  els.trimEndInput.value = String(state.trimEnd);
+  if (document.activeElement !== els.trimStartInput) els.trimStartInput.value = String(state.trimStart);
+  if (document.activeElement !== els.trimEndInput) els.trimEndInput.value = String(state.trimEnd);
   els.canvas.classList.toggle("is-seeking", state.seeking);
   updateAIStatus();
   updateVideoInfo();
@@ -1115,7 +1125,7 @@ function videoInfoRows() {
     ["ファイルサイズ", formatBytes(identity.size)],
     ["コーデック", identity.codec || "-"],
     ["動画指紋", fingerprint],
-    ["表示品質", frameQuality() === "png" ? "PNG 高画質" : "JPEG 高速"],
+    ["表示品質", frameDisplayMode()],
     ["処理方式", usesBrowserFrameSource() ? "ブラウザ内（動画送信なし）" : "ローカルアプリ（AVFoundation）"],
   ];
 }
@@ -1193,13 +1203,38 @@ function frameByStep(frame, direction, size = stepSize()) {
 }
 
 function setTrim(start, end) {
+  const previousStart = state.trimStart;
+  const previousEnd = state.trimEnd;
   state.trimStart = start;
   state.trimEnd = end;
   normalizeTrim();
+  if (state.trimStart === previousStart && state.trimEnd === previousEnd) {
+    updateStatus();
+    return;
+  }
   state.progressSnapshot = "";
   markDirty();
   seekFrame(state.frame);
   setStatus(`デジタイズ範囲を ${state.trimStart}-${state.trimEnd} にしました`);
+}
+
+function applyTrimInputs(changedSide) {
+  if (state.trimInputTimer) window.clearTimeout(state.trimInputTimer);
+  state.trimInputTimer = 0;
+  const maxFrame = maxFrameIndex();
+  let start = Number(els.trimStartInput.value);
+  let end = Number(els.trimEndInput.value);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return;
+  start = Math.max(0, Math.min(maxFrame, Math.round(start)));
+  end = Math.max(0, Math.min(maxFrame, Math.round(end)));
+  if (changedSide === "start" && start > end) end = start;
+  if (changedSide === "end" && end < start) start = end;
+  setTrim(start, end);
+}
+
+function scheduleTrimInput(changedSide) {
+  if (state.trimInputTimer) window.clearTimeout(state.trimInputTimer);
+  state.trimInputTimer = window.setTimeout(() => applyTrimInputs(changedSide), 250);
 }
 
 function trimFrameCount() {
@@ -1910,12 +1945,10 @@ function trackingOptionsForMarker(marker, frameDelta = 1) {
 }
 
 function loadProcessingImage(frame) {
-  return fetchFrameBlobUrl(frame, state.frameCacheToken).then((url) => new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`${frame}F の画像を読み込めませんでした`));
-    image.src = url;
-  }));
+  return fetchFrameResource(frame, state.frameCacheToken).then((resource) => {
+    if (!resource?.image) throw new Error(`${frame}F の画像を読み込めませんでした`);
+    return resource.image;
+  });
 }
 
 async function trackPointBetweenFrames(sourceFrame, targetFrame, point) {
@@ -3827,9 +3860,11 @@ function resizeCanvas() {
   const rect = els.canvas.getBoundingClientRect();
   const w = Math.max(1, Math.floor(rect.width));
   const h = Math.max(1, Math.floor(rect.height));
-  if (els.canvas.width !== w || els.canvas.height !== h) {
-    els.canvas.width = w;
-    els.canvas.height = h;
+  for (const canvas of [els.canvas, els.cursorCanvas]) {
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
   }
 }
 
@@ -4101,6 +4136,7 @@ function draw() {
   ctx.clearRect(0, 0, els.canvas.width, els.canvas.height);
   if (!state.ready || !state.videoWidth || !state.videoHeight) {
     drawEmpty(ctx);
+    drawCursorLayer();
     return;
   }
 
@@ -4125,8 +4161,25 @@ function draw() {
     if (!isMarkerVisible(marker)) continue;
     drawPoint(ctx, point, marker);
   }
+  drawCursorLayer();
+}
+
+function drawCursorLayer() {
+  if (state.cursorDrawRequest) cancelAnimationFrame(state.cursorDrawRequest);
+  state.cursorDrawRequest = 0;
+  const ctx = els.cursorCanvas.getContext("2d");
+  ctx.clearRect(0, 0, els.cursorCanvas.width, els.cursorCanvas.height);
+  if (!state.ready || !state.videoWidth || !state.videoHeight) return;
   drawCursorGuide(ctx);
   drawCanvasMagnifier(ctx);
+}
+
+function scheduleCursorDraw() {
+  if (state.cursorDrawRequest) return;
+  state.cursorDrawRequest = requestAnimationFrame(() => {
+    state.cursorDrawRequest = 0;
+    drawCursorLayer();
+  });
 }
 
 function drawCanvasMagnifier(ctx) {
@@ -4227,16 +4280,24 @@ function frameUrl(frame) {
 
 function resetFrameCache() {
   state.frameCacheToken += 1;
-  for (const item of state.frameCache.values()) URL.revokeObjectURL(item.url);
+  if (state.prefetchTimer) window.clearTimeout(state.prefetchTimer);
+  state.prefetchTimer = 0;
+  for (const item of state.frameCache.values()) releaseFrameResource(item);
   state.frameCache.clear();
   state.frameRequests.clear();
 }
 
+function releaseFrameResource(resource) {
+  if (!resource) return;
+  if (resource.url) URL.revokeObjectURL(resource.url);
+  if (typeof resource.image?.close === "function") resource.image.close();
+}
+
 function clientFrameCacheLimit() {
   const pixels = Math.max(1, state.videoWidth * state.videoHeight);
-  let limit = pixels >= 3840 * 2160 ? 12 : pixels >= 1920 * 1080 ? 24 : 48;
+  let limit = pixels >= 3840 * 2160 ? 4 : pixels >= 1920 * 1080 ? 8 : 16;
   const memory = Number(navigator.deviceMemory) || 8;
-  if (memory <= 4) limit = Math.max(8, Math.floor(limit / 2));
+  if (memory <= 4) limit = Math.max(4, Math.floor(limit / 2));
   return limit;
 }
 
@@ -4255,40 +4316,64 @@ function trimFrameCache() {
       state.frameCache.set(frame, item);
       continue;
     }
-    URL.revokeObjectURL(item.url);
+    releaseFrameResource(item);
     state.frameCache.delete(frame);
   }
 }
 
-async function fetchFrameBlobUrl(frame, token = state.frameCacheToken) {
+function frameResourceFromBlob(blob) {
+  if (typeof createImageBitmap === "function") {
+    return createImageBitmap(blob).then((image) => ({ image, bytes: blob.size }));
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => resolve({ image, url, bytes: blob.size });
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("image decode failed"));
+    };
+    image.src = url;
+  });
+}
+
+async function fetchFrameResource(frame, token = state.frameCacheToken) {
   const cached = state.frameCache.get(frame);
   if (cached) {
     state.frameCache.delete(frame);
     state.frameCache.set(frame, cached);
-    return cached.url;
+    return cached;
   }
 
   const pending = state.frameRequests.get(frame);
   if (pending) return pending;
 
   const storedTime = Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
-  const frameBlob = state.frameSource
-    ? state.frameSource.getFrameBlob(frame, frameQuality(), Number.isFinite(storedTime) ? storedTime : undefined)
-    : fetch(frameUrl(frame), { cache: "no-store" }).then((response) => {
+  const timeSec = Number.isFinite(storedTime) ? storedTime : undefined;
+  let resourcePromise = null;
+  if (state.frameSource?.getFrameImage) {
+    const directImage = state.frameSource.getFrameImage(frame, timeSec);
+    if (directImage) resourcePromise = directImage.then((image) => ({ image, bytes: 0 }));
+  }
+  if (!resourcePromise) {
+    const frameBlob = state.frameSource
+      ? state.frameSource.getFrameBlob(frame, frameQuality(), timeSec)
+      : fetch(frameUrl(frame), { cache: "no-store" }).then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.blob();
       });
+    resourcePromise = frameBlob.then(frameResourceFromBlob);
+  }
 
-  const request = frameBlob
-    .then((blob) => {
-      const url = URL.createObjectURL(blob);
+  const request = resourcePromise
+    .then((resource) => {
       if (token !== state.frameCacheToken) {
-        URL.revokeObjectURL(url);
+        releaseFrameResource(resource);
         throw new Error("stale frame");
       }
-      state.frameCache.set(frame, { url });
+      state.frameCache.set(frame, resource);
       trimFrameCache();
-      return url;
+      return resource;
     })
     .finally(() => {
       if (state.frameRequests.get(frame) === request) state.frameRequests.delete(frame);
@@ -4298,33 +4383,43 @@ async function fetchFrameBlobUrl(frame, token = state.frameCacheToken) {
   return request;
 }
 
-function decodeFrameUrl(url) {
-  const image = new Image();
-  if (image.decode) {
-    image.src = url;
-    return image.decode().then(() => url);
-  }
-  return new Promise((resolve, reject) => {
-    image.onload = () => resolve(url);
-    image.onerror = () => reject(new Error("image decode failed"));
-    image.src = url;
-  });
-}
-
 function loadFrameForDisplay(frame, token) {
-  return fetchFrameBlobUrl(frame, token).then(decodeFrameUrl);
+  return fetchFrameResource(frame, token);
 }
 
-function prefetchAdjacentFrames(frame, token) {
-  if (!state.ready || token !== state.frameCacheToken) return;
-  for (let offset = 1; offset <= clientPrefetchRadius(); offset += 1) {
-    for (const direction of [1, -1]) {
-      const target = frame + offset * direction;
+function paintFrameResource(resource) {
+  const canvas = els.frameImage;
+  if (!resource?.image || !(canvas instanceof HTMLCanvasElement)) return;
+  if (canvas.width !== state.videoWidth) canvas.width = state.videoWidth;
+  if (canvas.height !== state.videoHeight) canvas.height = state.videoHeight;
+  const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
+  context.imageSmoothingEnabled = false;
+  context.drawImage(resource.image, 0, 0, canvas.width, canvas.height);
+}
+
+function prefetchAdjacentFrames(frame, token, serial) {
+  if (state.prefetchTimer) window.clearTimeout(state.prefetchTimer);
+  const browserDecoder = state.frameSource?.kind === "browser";
+  state.prefetchTimer = window.setTimeout(() => {
+    state.prefetchTimer = 0;
+    if (!state.ready || token !== state.frameCacheToken || serial !== state.seekSerial) return;
+    const targets = [];
+    if (browserDecoder) {
+      const preferred = frame + state.seekDirection;
+      const fallback = frame - state.seekDirection;
+      if (preferred >= state.trimStart && preferred <= state.trimEnd) targets.push(preferred);
+      else if (fallback >= state.trimStart && fallback <= state.trimEnd) targets.push(fallback);
+    } else {
+      for (let offset = 1; offset <= clientPrefetchRadius(); offset += 1) {
+        targets.push(frame + offset, frame - offset);
+      }
+    }
+    for (const target of targets) {
       if (target < state.trimStart || target > state.trimEnd) continue;
       if (state.frameCache.has(target) || state.frameRequests.has(target)) continue;
-      fetchFrameBlobUrl(target, token).catch(() => {});
+      fetchFrameResource(target, token).catch(() => {});
     }
-  }
+  }, browserDecoder ? 90 : 20);
 }
 
 function finishSeek(serial) {
@@ -4337,7 +4432,9 @@ function finishSeek(serial) {
 function seekFrame(frame) {
   if (!state.ready) return;
   normalizeTrim();
+  const previousFrame = state.frame;
   state.frame = clampFrame(frame);
+  if (state.frame !== previousFrame) state.seekDirection = state.frame > previousFrame ? 1 : -1;
   const serial = ++state.seekSerial;
   const token = state.frameCacheToken;
 
@@ -4345,11 +4442,11 @@ function seekFrame(frame) {
   updateStatus();
   renderTable();
 
-  loadFrameForDisplay(state.frame, token).then((url) => {
+  loadFrameForDisplay(state.frame, token).then((resource) => {
     if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
-    els.frameImage.src = url;
+    paintFrameResource(resource);
     finishSeek(serial);
-    prefetchAdjacentFrames(state.frame, token);
+    prefetchAdjacentFrames(state.frame, token, serial);
   }).catch(() => {
     if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
     state.seeking = false;
@@ -6009,6 +6106,7 @@ function diagnosticPayload() {
       point_revision: state.pointRevision,
     },
     performance: {
+      frame_pipeline: frameDisplayMode(),
       client_cache_limit: clientFrameCacheLimit(),
       client_cache_entries: state.frameCache.size,
       pending_frame_requests: state.frameRequests.size,
@@ -6945,7 +7043,8 @@ function resetVideoForLoad() {
   state.videoWidth = 0;
   state.videoHeight = 0;
   state.videoIdentity = null;
-  els.frameImage.removeAttribute("src");
+  const frameContext = els.frameImage.getContext("2d");
+  frameContext?.clearRect(0, 0, els.frameImage.width, els.frameImage.height);
   updateStatus();
   draw();
   return { pendingTrim, previousVideoName };
@@ -6964,6 +7063,8 @@ function applyLoadedVideo(metadata, videoIdentity, pendingTrim) {
   normalizeTrim();
   state.videoWidth = Math.max(1, Number(metadata.width) || 1);
   state.videoHeight = Math.max(1, Number(metadata.height) || 1);
+  els.frameImage.width = state.videoWidth;
+  els.frameImage.height = state.videoHeight;
   els.fpsInput.value = String(Number(state.fps.toFixed(6)));
   state.ready = true;
   seekFrame(state.frame);
@@ -7157,13 +7258,13 @@ els.canvas.addEventListener("mousemove", (event) => {
   els.pointInfo.textContent = point
     ? `${state.activeMarker}: ${formatPoint(point)}${real ? ` / ${real.x.toFixed(4)},${real.y.toFixed(4)}${transform.unit}` : ""} ${sourceTag(point.src, point.quality)}`
     : `${state.activeMarker}: なし`;
-  draw();
+  scheduleCursorDraw();
 });
 
 els.canvas.addEventListener("mouseleave", () => {
   state.cursor = null;
   els.cursorInfo.textContent = "カーソル: -";
-  draw();
+  scheduleCursorDraw();
 });
 
 els.canvas.addEventListener("click", (event) => {
@@ -7240,8 +7341,16 @@ for (const control of [els.pointSize, els.lineWidth, els.manualPointColor]) {
   });
   control.addEventListener("input", draw);
 }
-els.trimStartInput.addEventListener("change", () => setTrim(Number(els.trimStartInput.value), state.trimEnd));
-els.trimEndInput.addEventListener("change", () => setTrim(state.trimStart, Number(els.trimEndInput.value)));
+els.trimStartInput.addEventListener("input", () => scheduleTrimInput("start"));
+els.trimEndInput.addEventListener("input", () => scheduleTrimInput("end"));
+els.trimStartInput.addEventListener("change", () => applyTrimInputs("start"));
+els.trimEndInput.addEventListener("change", () => applyTrimInputs("end"));
+els.trimStartInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") applyTrimInputs("start");
+});
+els.trimEndInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") applyTrimInputs("end");
+});
 els.setTrimStart.addEventListener("click", () => setTrim(state.frame, state.trimEnd));
 els.setTrimEnd.addEventListener("click", () => setTrim(state.trimStart, state.frame));
 els.frameSlider.addEventListener("input", () => seekFrame(Number(els.frameSlider.value)));
