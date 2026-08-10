@@ -14,11 +14,12 @@
 
 macOSデスクトップアプリ用OAuthクライアント、Authorization Code Flow、PKCE S256、ランダムな `state`、loopback redirectを使用します。アクセストークンはメモリ上だけで利用し、再ログイン用refresh tokenだけをmacOSキーチェーンへ保存します。
 
-OAuthクライアントIDは秘密情報ではありませんが、配布主体を明確にするため公開リポジトリへ直接記述しません。次のどちらかで設定します。
+OAuthクライアントIDは秘密情報ではありません。GoogleのDesktopクライアントではトークン交換時にクライアントシークレットの送信も要求されますが、インストール型アプリへ同梱した値は抽出可能であり、機密情報や認証境界として扱えません。VideoDigitizerはPKCE、ランダムなstate、loopback redirectを認証保護の中心とし、OAuth設定値は公開リポジトリへ直接記述しません。開発時は次の環境変数、または端末内の `google_oauth_client.json` で設定します。
 
 ```text
 VIDEO_DIGITIZER_GOOGLE_CLIENT_ID
-~/Library/Application Support/VideoDigitizer/google_oauth_client_id.txt
+VIDEO_DIGITIZER_GOOGLE_CLIENT_SECRET
+~/Library/Application Support/VideoDigitizer/google_oauth_client.json
 ```
 
 Google Cloud Consoleではアプリケーションの種類を `Desktop app` とし、OAuth同意画面へ公開プライバシーポリシーURLを登録します。
