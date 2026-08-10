@@ -5803,6 +5803,34 @@ function projectJsonText() {
   return JSON.stringify(projectPayload(), null, 2);
 }
 
+function autosavePayload() {
+  const payload = projectPayload();
+  payload.storage_format = "compact_autosave_v1";
+
+  // Autosave only needs the canonical point store. The portable project keeps
+  // the duplicated, human-readable coordinate records for external tools.
+  delete payload.coordinates;
+  delete payload.points;
+  delete payload.point_flags;
+  delete payload.ai_suggestions;
+  delete payload.audit_log;
+  delete payload.digitize.coordinates;
+  delete payload.digitize.stats;
+
+  // These sections already exist at the project root.
+  delete payload.digitize.calibration;
+  delete payload.digitize.timing;
+  delete payload.digitize.coordinate_system;
+  delete payload.digitize.analysis;
+  delete payload.digitize.study_trials;
+  delete payload.digitize.comparison;
+  return payload;
+}
+
+function autosaveJsonText() {
+  return JSON.stringify(autosavePayload());
+}
+
 function saveProjectPackage() {
   const payload = projectPayload();
   payload.package = {
@@ -5990,7 +6018,7 @@ async function writeAccountAutosave(text) {
 
 function writeAutosave() {
   if (!state.dirty && !state.ready && Object.keys(state.points).length === 0) return;
-  const text = projectJsonText();
+  const text = autosaveJsonText();
   globalThis.VideoDigitizerStorage?.set(AUTOSAVE_KEY, text).catch(() => {});
   writeAccountAutosave(text);
 }
