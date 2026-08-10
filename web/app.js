@@ -83,8 +83,9 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "2.0.0";
 const AI_SUGGESTION_VERSION = 1;
+const HIGH_ACCURACY_AI_MODEL_ID = "google_deepmind_tapnextpp_512";
 const POSE_AI_MODEL = {
   id: "mediapipe_pose_landmarker_lite",
   version: "sha256-59929e1d1ee95287",
@@ -202,6 +203,11 @@ const els = {
   trackMarkerRange: $("trackMarkerRange"),
   trackBetweenAnchors: $("trackBetweenAnchors"),
   trackAllBetweenAnchors: $("trackAllBetweenAnchors"),
+  trackingEngine: $("trackingEngine"),
+  aiTrackingResolution: $("aiTrackingResolution"),
+  installAITrackingModel: $("installAITrackingModel"),
+  refreshAITrackingStatus: $("refreshAITrackingStatus"),
+  aiTrackingStatus: $("aiTrackingStatus"),
   runPoseAI: $("runPoseAI"),
   acceptAISuggestion: $("acceptAISuggestion"),
   acceptAIFrame: $("acceptAIFrame"),
@@ -349,6 +355,7 @@ const state = {
   pointRevision: 0,
   aiSuggestionRevision: 0,
   aiRuntimeStatus: "未実行",
+  aiTrackingCapabilities: null,
   tableSnapshot: "",
   progressSnapshot: "",
   projectFileHandle: null,
@@ -1207,6 +1214,7 @@ function sourceTag(src, quality = {}) {
   if (src === "interp") return "I";
   if (src === "ai") return "A";
   if (src === "track") {
+    if (String(quality.note || "").startsWith("tapnextpp")) return "AI-T";
     if (String(quality.note || "").startsWith("anchor_bidirectional")) return "TB";
     if (String(quality.note || "").startsWith("template")) return "T*";
     if (String(quality.note || "").startsWith("hold")) return "T!";
@@ -1282,6 +1290,7 @@ function applySelectedPointStatus() {
 
 function markerColor(point = {}) {
   if (point.src === "ai") return "#087f8c";
+  if (point.src === "track" && String(point.quality?.note || "").startsWith("tapnextpp")) return "#006d77";
   if (point.src === "track") return "#22863a";
   if (point.src === "interp") return "#8d4bd6";
   return manualPointColor();
@@ -2631,6 +2640,339 @@ async function runPoseAIForCurrentFrame() {
     els.runPoseAI.disabled = false;
     renderAll();
   }
+}
+
+function aiTrackingApiUrl(path, params = {}) {
+  const query = new URLSearchParams(sessionQuery());
+  for (const [key, value] of Object.entries(params)) query.set(key, String(value));
+  return `./api/ai-tracking/${path}?${query.toString()}`;
+}
+
+async function apiErrorMessage(response) {
+  const text = (await response.text()).trim();
+  const match = text.match(/<p>Message: ([^<]+)<\/p>/i);
+  return match?.[1] || text || `HTTP ${response.status}`;
+}
+
+function updateAITrackingControls() {
+  const capabilities = state.aiTrackingCapabilities;
+  const localApp = state.sourceMode === "api";
+  const runtimeAvailable = Boolean(capabilities?.runtime_available);
+  const model = capabilities?.model;
+  const modelReady = Boolean(runtimeAvailable && model?.valid);
+  if (!localApp) {
+    els.aiTrackingStatus.textContent = "高精度AI: Macアプリ版で利用できます";
+  } else if (!capabilities) {
+    els.aiTrackingStatus.textContent = "高精度AI: 状態を確認できません";
+  } else if (!runtimeAvailable) {
+    els.aiTrackingStatus.textContent = "高精度AI: このアプリにはAI実行環境が含まれていません";
+  } else if (!modelReady) {
+    const downloaded = Number(model?.size || 0) / (1024 ** 3);
+    els.aiTrackingStatus.textContent = downloaded > 0
+      ? `高精度AI: モデル未完了 ${downloaded.toFixed(2)} / 2.36GB`
+      : "高精度AI: モデル未導入 (初回のみ約2.53GBをダウンロード)";
+  } else {
+    els.aiTrackingStatus.textContent = `高精度AI: 利用可能 / ${capabilities.engine?.name || "TAPNext++"} / 遮蔽・再検出対応`;
+  }
+  els.installAITrackingModel.disabled = !localApp || !runtimeAvailable || modelReady;
+  els.refreshAITrackingStatus.disabled = !localApp;
+  els.aiTrackingResolution.disabled = !modelReady;
+  const highAccuracy = els.trackingEngine.value === "tapnextpp";
+  els.trackMarkerRange.textContent = highAccuracy ? "範囲を高精度AI追跡" : "範囲を画像追跡";
+  els.trackBetweenAnchors.textContent = highAccuracy ? "次の手入力点まで高精度AI追跡" : "次の手入力点まで両方向追跡";
+  els.trackAllBetweenAnchors.textContent = highAccuracy ? "現在Fの全点を高精度AI追跡" : "現在Fの全点を両方向追跡";
+  const highAccuracyUnavailable = highAccuracy && !modelReady;
+  els.trackMarkerRange.disabled = highAccuracyUnavailable;
+  els.trackBetweenAnchors.disabled = highAccuracyUnavailable;
+  els.trackAllBetweenAnchors.disabled = highAccuracyUnavailable;
+}
+
+async function refreshAITrackingCapabilities() {
+  if (state.sourceMode !== "api") {
+    state.aiTrackingCapabilities = null;
+    updateAITrackingControls();
+    return null;
+  }
+  try {
+    const response = await fetch(aiTrackingApiUrl("capabilities"), { cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    state.aiTrackingCapabilities = await response.json();
+  } catch (_error) {
+    state.aiTrackingCapabilities = null;
+  }
+  updateAITrackingControls();
+  return state.aiTrackingCapabilities;
+}
+
+async function cancelServerAIJob(jobId) {
+  if (!jobId) return;
+  await fetch(aiTrackingApiUrl("cancel"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: jobId }),
+  }).catch(() => {});
+}
+
+async function waitForServerAIJob(job, jobId) {
+  let cancellationSent = false;
+  while (true) {
+    if (job.cancelled && !cancellationSent) {
+      cancellationSent = true;
+      await cancelServerAIJob(jobId);
+    }
+    const response = await fetch(aiTrackingApiUrl("job", { id: jobId }), { cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const status = await response.json();
+    if (["complete", "failed", "cancelled"].includes(status.status)) return status;
+    if (status.kind === "model_download") {
+      const percent = status.total > 0 ? Math.floor(status.current / status.total * 100) : 0;
+      els.jobStatus.textContent = status.phase === "verify"
+        ? "処理: AIモデルを検証中"
+        : `処理: AIモデル導入 ${percent}%`;
+    } else if (status.phase === "loading") {
+      els.jobStatus.textContent = "処理: 高精度AIモデルを読み込み中";
+    } else {
+      const phase = String(status.phase || "tracking").startsWith("backward") ? "逆方向" : "順方向";
+      els.jobStatus.textContent = `処理: 高精度AI ${phase} ${status.current || 0}/${status.total || 0}`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+}
+
+async function installAITrackingModel() {
+  const capabilities = await refreshAITrackingCapabilities();
+  if (!capabilities?.runtime_available) {
+    setStatus("このアプリでは高精度AI実行環境を利用できません");
+    return;
+  }
+  if (capabilities.model?.valid) {
+    setStatus("高精度AIモデルは導入済みです");
+    return;
+  }
+  if (!confirm([
+    "高精度AI追跡モデルを端末へ導入します。",
+    "",
+    "ダウンロード: 約2.53GB",
+    "保存先: このMac内のVideoDigitizer用モデル領域",
+    "通常の動画や座標データは外部へ送信しません。",
+    "",
+    "続けますか？",
+  ].join("\n"))) return;
+  const job = beginBackgroundJob("AIモデル導入");
+  if (!job) {
+    setStatus("別の処理が実行中です");
+    return;
+  }
+  try {
+    const response = await fetch(aiTrackingApiUrl("model/download"), { method: "POST" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const started = await response.json();
+    job.serverJobId = started.id;
+    const completed = await waitForServerAIJob(job, started.id);
+    await refreshAITrackingCapabilities();
+    if (completed.status === "failed") throw new Error(completed.error || "モデルを導入できませんでした");
+    finishBackgroundJob(job, completed.status === "cancelled" ? "AIモデル導入を中止しました" : "高精度AIモデルを導入しました");
+  } catch (error) {
+    finishBackgroundJob(job, `高精度AIモデルを導入できませんでした: ${error.message}`);
+  }
+}
+
+function highAccuracyTrackingRequest(mode) {
+  const startFrame = state.frame;
+  const queries = [];
+  let endFrame = state.trimEnd;
+  if (mode === "all_anchors") {
+    const candidates = batchAnchorCandidates(startFrame);
+    for (const candidate of candidates) {
+      queries.push({
+        marker: candidate.marker,
+        x: candidate.startPoint.x,
+        y: candidate.startPoint.y,
+        end_anchor: {
+          frame: candidate.endAnchor.frame,
+          x: candidate.endAnchor.point.x,
+          y: candidate.endAnchor.point.y,
+        },
+      });
+    }
+    endFrame = queries.length ? Math.max(...queries.map((item) => item.end_anchor.frame)) : startFrame;
+  } else {
+    const point = getPoint(startFrame, state.activeMarker);
+    if (!point) return { error: `${startFrame}F の ${state.activeMarker} に開始点が必要です` };
+    const query = { marker: state.activeMarker, x: point.x, y: point.y };
+    if (mode === "single_anchor") {
+      if (point.src !== "manual") return { error: `${startFrame}F の ${state.activeMarker} に手入力点が必要です` };
+      const anchor = findNextManualTrackingAnchor(state.activeMarker, startFrame);
+      if (!anchor) return { error: `${state.activeMarker} の後方に手入力点がありません` };
+      query.end_anchor = { frame: anchor.frame, x: anchor.point.x, y: anchor.point.y };
+      endFrame = anchor.frame;
+    }
+    queries.push(query);
+  }
+  if (!queries.length) return { error: "現在フレームと後方フレームに対応する手入力アンカーがありません" };
+  if (endFrame <= startFrame) return { error: "追跡できる後方フレームがありません" };
+  return {
+    start_frame: startFrame,
+    end_frame: endFrame,
+    step: stepSize(),
+    input_resolution: Number(els.aiTrackingResolution.value) === 512 ? 512 : 256,
+    support_points: queries.length > 12 ? 64 : 32,
+    confidence_threshold: Math.max(0.2, Math.min(0.95, Number(els.trackingConfidence.value) || 0.55)),
+    disagreement_threshold: Math.max(6, Number(els.trackingPatchRadius.value) * 1.5),
+    queries,
+  };
+}
+
+function applyHighAccuracyTrackingResults(payload) {
+  const sorted = (payload.results || []).slice().sort((a, b) => a.frame - b.frame || markerIndex(a.marker) - markerIndex(b.marker));
+  const undoItems = [];
+  const lastOccluded = new Map();
+  let applied = 0;
+  let occluded = 0;
+  let uncertain = 0;
+  for (const result of sorted) {
+    const frame = clampFrame(Number(result.frame));
+    const marker = String(result.marker || "");
+    if (!state.markers.includes(marker) || getPoint(frame, marker)?.src === "manual") continue;
+    const prevPoint = getPoint(frame, marker) ? structuredClone(getPoint(frame, marker)) : null;
+    const prevFlag = pointFlagAt(frame, marker) ? structuredClone(pointFlagAt(frame, marker)) : null;
+    const wasOccluded = lastOccluded.get(marker) === true;
+    const isOccluded = Boolean(result.occluded);
+    lastOccluded.set(marker, isOccluded);
+    let nextPoint = null;
+    let nextFlag = null;
+    if (isOccluded) {
+      occluded += 1;
+      nextFlag = {
+        status: "occluded",
+        confidence: Number(result.confidence) || 0,
+        model_id: payload.model_id,
+        model_version: payload.model_version,
+        updated_at: new Date().toISOString(),
+      };
+    } else {
+      const confidence = Math.max(0, Math.min(1, Number(result.confidence) || 0));
+      const disagreement = Number.isFinite(Number(result.disagreement)) ? Number(result.disagreement) : null;
+      nextPoint = {
+        x: normalizeCoordinate(Number(result.x), state.videoWidth - 1),
+        y: normalizeCoordinate(Number(result.y), state.videoHeight - 1),
+        src: "track",
+        quality: {
+          confidence,
+          note: payload.method,
+          method: payload.method,
+          model_id: payload.model_id,
+          model_version: payload.model_version,
+          device: payload.device,
+          input_resolution: payload.input_resolution,
+          visible: true,
+          redetected: wasOccluded,
+          track_disagreement: disagreement,
+          forward_confidence: Number(result.forward_confidence ?? confidence),
+          backward_confidence: Number(result.backward_confidence ?? confidence),
+        },
+      };
+      if (result.uncertain) {
+        uncertain += 1;
+        nextFlag = {
+          status: "uncertain",
+          model_id: payload.model_id,
+          model_version: payload.model_version,
+          updated_at: new Date().toISOString(),
+        };
+      }
+    }
+    undoItems.push({ frame, marker, prevPoint, nextPoint, prevFlag, nextFlag });
+    if (nextPoint) ensureFrame(frame)[marker] = nextPoint;
+    else if (state.points[String(frame)]) {
+      delete state.points[String(frame)][marker];
+      if (Object.keys(state.points[String(frame)]).length === 0) delete state.points[String(frame)];
+    }
+    setPointFlagValue(frame, marker, nextFlag);
+    applied += 1;
+  }
+  if (undoItems.length) {
+    state.undo.push({ kind: "compound", items: undoItems });
+    state.redo = [];
+    touchPoints();
+  }
+  return { applied, occluded, uncertain };
+}
+
+async function runHighAccuracyTracking(mode) {
+  if (!state.ready || state.seeking) {
+    setStatus(state.seeking ? "フレーム移動が終わってからAI追跡してください" : "先に動画を開いてください");
+    return;
+  }
+  const capabilities = await refreshAITrackingCapabilities();
+  if (!capabilities?.runtime_available) {
+    setStatus("高精度AI追跡はMacアプリ版で利用できます");
+    return;
+  }
+  if (!capabilities.model?.valid) {
+    setStatus("先に「AIモデルを導入」を実行してください");
+    return;
+  }
+  const request = highAccuracyTrackingRequest(mode);
+  if (request.error) {
+    setStatus(request.error);
+    return;
+  }
+  if (request.input_resolution === 512 && !confirm("精細512pxは高精度ですが、標準256pxより時間とメモリを多く使います。続けますか？")) return;
+  const job = beginBackgroundJob(`高精度AI追跡 ${request.queries.length}点`);
+  if (!job) {
+    setStatus("別の処理が実行中です");
+    return;
+  }
+  try {
+    const response = await fetch(aiTrackingApiUrl("start"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const started = await response.json();
+    job.serverJobId = started.id;
+    const completed = await waitForServerAIJob(job, started.id);
+    if (completed.status === "cancelled") {
+      finishBackgroundJob(job, "高精度AI追跡を中止しました");
+      return;
+    }
+    if (completed.status !== "complete") throw new Error(completed.error || "高精度AI追跡に失敗しました");
+    const summary = applyHighAccuracyTrackingResults(completed.result);
+    recordAudit("tapnextpp_tracking", {
+      mode,
+      start_frame: request.start_frame,
+      end_frame: request.end_frame,
+      marker_count: request.queries.length,
+      applied_count: summary.applied,
+      uncertain_count: summary.uncertain,
+      occluded_count: summary.occluded,
+      model_id: completed.result.model_id,
+      model_version: completed.result.model_version,
+      input_resolution: completed.result.input_resolution,
+      device: completed.result.device,
+    });
+    renderAll();
+    finishBackgroundJob(job, `高精度AI追跡完了: ${summary.applied}件 / 要確認 ${summary.uncertain}件 / 遮蔽 ${summary.occluded}件`);
+  } catch (error) {
+    finishBackgroundJob(job, `高精度AI追跡に失敗しました: ${error.message}`);
+  }
+}
+
+function runMarkerRangeTracking() {
+  if (els.trackingEngine.value === "tapnextpp") runHighAccuracyTracking("single_range");
+  else trackActiveMarkerToRangeEnd();
+}
+
+function runBetweenAnchorTracking() {
+  if (els.trackingEngine.value === "tapnextpp") runHighAccuracyTracking("single_anchor");
+  else trackActiveMarkerBetweenManualAnchors();
+}
+
+function runAllBetweenAnchorTracking() {
+  if (els.trackingEngine.value === "tapnextpp") runHighAccuracyTracking("all_anchors");
+  else trackAllMarkersBetweenManualAnchors();
 }
 
 function nudgeActivePoint(dx, dy) {
@@ -4346,6 +4688,7 @@ function renderAll() {
   if (els.trackingPatchRadius) els.trackingPatchRadius.value = String(constraint.patchRadius);
   if (els.trackingConfidence) els.trackingConfidence.value = String(constraint.confidence);
   updateAIStatus();
+  updateAITrackingControls();
   updateStatus();
   renderMarkers();
   renderMarkerVisibility();
@@ -4511,14 +4854,25 @@ function interpolateMarker(marker) {
 
 function clearDerived() {
   let removed = 0;
+  const removedCells = new Set();
   for (const [frame, row] of Object.entries(state.points)) {
     for (const [marker, point] of Object.entries(row)) {
       if (point.src !== "manual") {
         delete row[marker];
+        setPointFlagValue(Number(frame), marker, null);
+        removedCells.add(`${frame}\u0000${marker}`);
         removed += 1;
       }
     }
     if (Object.keys(row).length === 0) delete state.points[frame];
+  }
+  for (const [frame, row] of Object.entries(state.pointFlags)) {
+    for (const [marker, flag] of Object.entries(row || {})) {
+      if (flag?.model_id === HIGH_ACCURACY_AI_MODEL_ID && !removedCells.has(`${frame}\u0000${marker}`)) {
+        setPointFlagValue(Number(frame), marker, null);
+        removed += 1;
+      }
+    }
   }
   if (removed > 0) touchPoints();
   setStatus(`派生点を削除しました: ${removed}点`);
@@ -5416,6 +5770,8 @@ function projectPayload() {
       tracking_max_move: Math.max(1, Number(els.trackingMaxMove?.value) || 50),
       tracking_patch_radius: Math.max(3, Math.min(24, Math.round(Number(els.trackingPatchRadius?.value) || 8))),
       tracking_confidence: Math.max(0.2, Math.min(0.95, Number(els.trackingConfidence?.value) || 0.55)),
+      tracking_engine: els.trackingEngine?.value === "tapnextpp" ? "tapnextpp" : "lightweight",
+      ai_tracking_resolution: Number(els.aiTrackingResolution?.value) === 512 ? 512 : 256,
       show_ai_suggestions: els.showAISuggestions.checked,
       workspace: workspaceSettings(),
     },
@@ -5991,6 +6347,8 @@ function loadProject(file) {
         els.trackingMaxMove.value = String(Math.max(1, Number(payload.ui_settings.tracking_max_move) || 50));
         els.trackingPatchRadius.value = String(Math.max(3, Math.min(24, Math.round(Number(payload.ui_settings.tracking_patch_radius) || 8))));
         els.trackingConfidence.value = String(Math.max(0.2, Math.min(0.95, Number(payload.ui_settings.tracking_confidence) || 0.55)));
+        els.trackingEngine.value = payload.ui_settings.tracking_engine === "tapnextpp" ? "tapnextpp" : "lightweight";
+        els.aiTrackingResolution.value = Number(payload.ui_settings.ai_tracking_resolution) === 512 ? "512" : "256";
         els.showAISuggestions.checked = payload.ui_settings.show_ai_suggestions !== false;
         applyWorkspaceSettings(payload.ui_settings.workspace || {});
       }
@@ -6396,9 +6754,16 @@ els.copyPrevPoint.addEventListener("click", copyPreviousPoint);
 els.copyPrevFrame.addEventListener("click", copyPreviousFramePoints);
 els.predictPoint.addEventListener("click", predictCurrentPointFromPreviousFrames);
 els.trackNextPoint.addEventListener("click", trackActivePointToNextFrame);
-els.trackMarkerRange.addEventListener("click", trackActiveMarkerToRangeEnd);
-els.trackBetweenAnchors.addEventListener("click", trackActiveMarkerBetweenManualAnchors);
-els.trackAllBetweenAnchors.addEventListener("click", trackAllMarkersBetweenManualAnchors);
+els.trackMarkerRange.addEventListener("click", runMarkerRangeTracking);
+els.trackBetweenAnchors.addEventListener("click", runBetweenAnchorTracking);
+els.trackAllBetweenAnchors.addEventListener("click", runAllBetweenAnchorTracking);
+els.trackingEngine.addEventListener("change", () => {
+  updateAITrackingControls();
+  markDirty();
+});
+els.aiTrackingResolution.addEventListener("change", markDirty);
+els.installAITrackingModel.addEventListener("click", installAITrackingModel);
+els.refreshAITrackingStatus.addEventListener("click", refreshAITrackingCapabilities);
 els.runPoseAI.addEventListener("click", runPoseAIForCurrentFrame);
 els.acceptAISuggestion.addEventListener("click", acceptCurrentAISuggestion);
 els.acceptAIFrame.addEventListener("click", acceptCurrentFrameAISuggestions);
@@ -6411,7 +6776,10 @@ els.showAISuggestions.addEventListener("change", () => {
 els.nextReviewPoint.addEventListener("click", jumpToNextReviewPoint);
 els.saveTrackingConstraint.addEventListener("click", saveTrackingConstraint);
 els.cancelJob.addEventListener("click", () => {
-  if (state.backgroundJob) state.backgroundJob.cancelled = true;
+  if (state.backgroundJob) {
+    state.backgroundJob.cancelled = true;
+    if (state.backgroundJob.serverJobId) cancelServerAIJob(state.backgroundJob.serverJobId);
+  }
 });
 els.previewInterpolation.addEventListener("click", previewInterpolation);
 els.interpolationMethod.addEventListener("change", markDirty);
@@ -6652,3 +7020,4 @@ try {
   applyWorkspaceSettings({});
 }
 renderAll();
+refreshAITrackingCapabilities();

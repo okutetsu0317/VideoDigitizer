@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=1.9.0" />
-    <link rel="icon" href="./icon-192.png?v=1.9.0" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=1.9.0" />
-    <link rel="stylesheet" href="./styles.css?v=1.9.0" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.0.0" />
+    <link rel="icon" href="./icon-192.png?v=2.0.0" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.0.0" />
+    <link rel="stylesheet" href="./styles.css?v=2.0.0" />
   </head>
   <body>
     <main class="app">
@@ -263,6 +263,23 @@
             <button id="trackMarkerRange" type="button">範囲を画像追跡</button>
             <button id="trackBetweenAnchors" type="button" class="wide-control">次の手入力点まで両方向追跡</button>
             <button id="trackAllBetweenAnchors" type="button" class="wide-control">現在Fの全点を両方向追跡</button>
+            <div class="ai-tracking-engine wide-control">
+              <label class="field-block">追跡エンジン
+                <select id="trackingEngine">
+                  <option value="lightweight" selected>軽量画像追跡</option>
+                  <option value="tapnextpp">高精度AI追跡 (TAPNext++)</option>
+                </select>
+              </label>
+              <label class="field-block">AI処理解像度
+                <select id="aiTrackingResolution">
+                  <option value="256" selected>標準 256px</option>
+                  <option value="512">精細 512px</option>
+                </select>
+              </label>
+              <button id="installAITrackingModel" type="button">AIモデルを導入</button>
+              <button id="refreshAITrackingStatus" type="button">状態を更新</button>
+              <div id="aiTrackingStatus" class="small ai-tracking-status">高精度AI: 状態確認中</div>
+            </div>
             <div class="ai-actions wide-control">
               <button id="runPoseAI" type="button">AI姿勢候補</button>
               <button id="acceptAISuggestion" type="button">候補を採用</button>
@@ -617,8 +634,8 @@
     </main>
     <script src="./frame-source.js"></script>
     <script src="./pwa.js"></script>
-    <script src="./ai-pose.js?v=1.9.0"></script>
-    <script src="./point-tracker.js?v=1.9.0"></script>
-    <script src="./app.js?v=1.9.0"></script>
+    <script src="./ai-pose.js?v=2.0.0"></script>
+    <script src="./point-tracker.js?v=2.0.0"></script>
+    <script src="./app.js?v=2.0.0"></script>
   </body>
 </html>

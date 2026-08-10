@@ -652,6 +652,26 @@ button:hover,
   background: var(--ai-soft);
 }
 
+.ai-tracking-engine {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #aebbc5;
+  border-left: 3px solid #22577a;
+  background: #f4f8fa;
+}
+
+.ai-tracking-engine button {
+  min-width: 0;
+}
+
+.ai-tracking-status {
+  grid-column: 1 / -1;
+  color: #16425b;
+  line-height: 1.45;
+}
+
 .ai-actions button:first-child {
   border-color: var(--ai);
   color: #075d66;

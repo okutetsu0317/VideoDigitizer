@@ -32,6 +32,16 @@ v = (h21*x + h22*y + h23) / (h31*x + h32*y + 1)
 - 予測点は手入力点と区別して保存し、信頼度、使用点数、移動量上限超過を記録します。
 - 欠測補間は線形補間、直前値保持、最近傍の3方式です。処理対象は設定したフレーム範囲内に限定します。
 
+## AI追跡
+
+- 姿勢候補はMediaPipe Pose Landmarker Liteを使用し、採用前の候補として表示します。
+- 任意点の高精度追跡は、Google DeepMindがApache License 2.0で公開するTAPNext++のPyTorch実装を使用します。
+- 取り込み元は `google-deepmind/tapnet` のコミット `c2cbab81cc06092b5f05bfe2da7bfec54e2079c9` です。
+- 公式モデルはアプリへ同梱せず、利用者が明示的に導入した場合だけ公式Google Cloud Storageから取得します。
+- 推論はローカルの別プロセスで行い、動画、座標、推論結果を外部サービスへ送信しません。
+- 軽量画像追跡とAI追跡は出力元、モデル版、信頼度、遮蔽、再検出、前後不一致を区別して保存します。
+- 自動追跡点は手入力点を上書きせず、研究者による確認と手修正を前提にします。
+
 ## 基本分析
 
 - 距離は2点間のユークリッド距離です。
@@ -60,3 +70,6 @@ v = (h21*x + h22*y + h23) / (h31*x + h32*y + 1)
 - OpenCV `getPerspectiveTransform`: https://docs.opencv.org/4.x/da/d54/group__imgproc__transform.html
 - OpenCV Camera Calibration: https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html
 - OpenCV Video I/O configuration: https://docs.opencv.org/4.x/db/d05/tutorial_config_reference.html
+- Google DeepMind TAPNet / TAPNext++: https://github.com/google-deepmind/tapnet
+- TAPNext++ paper: https://arxiv.org/abs/2604.10582
+- PyTorch macOS 26 MPS issue: https://github.com/pytorch/pytorch/issues/177819
