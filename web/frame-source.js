@@ -446,14 +446,47 @@
         ? Math.max(0, Math.min(Math.max(0, this.duration - 0.000001), requestedTime + frameDuration * 0.25))
         : this.seekTimeForFrame(frame);
 
+      let didSeek = false;
       if (Math.abs(this.video.currentTime - targetTime) > Math.max(0.0001, frameDuration * 0.05)) {
         const seeked = waitForEvent(this.video, "seeked");
         this.video.currentTime = targetTime;
         await seeked;
+        didSeek = true;
       }
       if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
         await waitForEvent(this.video, "loadeddata");
       }
+      if (didSeek) await this._waitForPresentedFrame(targetTime, frameDuration);
+    }
+
+    _waitForPresentedFrame(targetTime, frameDuration) {
+      if (typeof this.video.requestVideoFrameCallback !== "function") {
+        return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        let callbackId = 0;
+        const tolerance = Math.max(0.001, frameDuration * 0.6);
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          if (callbackId && this.video.cancelVideoFrameCallback) {
+            this.video.cancelVideoFrameCallback(callbackId);
+          }
+          resolve();
+        };
+        const checkFrame = (_now, metadata) => {
+          const mediaTime = Number(metadata?.mediaTime);
+          if (!Number.isFinite(mediaTime) || Math.abs(mediaTime - targetTime) <= tolerance) {
+            finish();
+            return;
+          }
+          callbackId = this.video.requestVideoFrameCallback(checkFrame);
+        };
+        const timeoutId = setTimeout(finish, 500);
+        callbackId = this.video.requestVideoFrameCallback(checkFrame);
+      });
     }
 
     async _decodeFrameBlob(frame, format, timeSec) {
