@@ -26,7 +26,7 @@
     return worker;
   }
 
-  async function track(sourceImage, targetImage, point, options = {}) {
+  async function request(type, sourceImage, targetImage, payload = {}) {
     const activeWorker = ensureWorker();
     const [source, target] = await Promise.all([
       global.createImageBitmap(sourceImage),
@@ -34,8 +34,17 @@
     ]);
     const id = ++sequence;
     const response = new Promise((resolve, reject) => requests.set(id, { resolve, reject }));
-    activeWorker.postMessage({ type: "track", id, source, target, point, options }, [source, target]);
+    activeWorker.postMessage({ type, id, source, target, ...payload }, [source, target]);
     return response;
+  }
+
+  function track(sourceImage, targetImage, point, options = {}) {
+    return request("track", sourceImage, targetImage, { point, options });
+  }
+
+  function trackMany(sourceImage, targetImage, items) {
+    if (!Array.isArray(items) || items.length === 0) return Promise.resolve([]);
+    return request("track-many", sourceImage, targetImage, { items });
   }
 
   function terminate() {
@@ -45,5 +54,5 @@
     requests.clear();
   }
 
-  global.VideoDigitizerPointTracker = { track, terminate };
+  global.VideoDigitizerPointTracker = { track, trackMany, terminate };
 })(globalThis);

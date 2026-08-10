@@ -83,7 +83,7 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 const AI_SUGGESTION_VERSION = 1;
 const POSE_AI_MODEL = {
   id: "mediapipe_pose_landmarker_lite",
@@ -201,6 +201,7 @@ const els = {
   trackNextPoint: $("trackNextPoint"),
   trackMarkerRange: $("trackMarkerRange"),
   trackBetweenAnchors: $("trackBetweenAnchors"),
+  trackAllBetweenAnchors: $("trackAllBetweenAnchors"),
   runPoseAI: $("runPoseAI"),
   acceptAISuggestion: $("acceptAISuggestion"),
   acceptAIFrame: $("acceptAIFrame"),
@@ -1850,12 +1851,14 @@ function saveTrackingConstraint() {
 }
 
 function currentTrackingOptions(frameDelta = 1) {
+  return trackingOptionsForMarker(state.activeMarker, frameDelta);
+}
+
+function trackingOptionsForMarker(marker, frameDelta = 1) {
+  const constraint = trackingConstraint(marker);
   return {
-    maxMove: Math.max(1, Number(els.trackingMaxMove.value) || 50),
-    direction: ["horizontal", "vertical"].includes(els.trackingDirection.value) ? els.trackingDirection.value : "any",
-    patchRadius: Math.max(3, Math.min(24, Math.round(Number(els.trackingPatchRadius.value) || 8))),
-    confidence: Math.max(0.2, Math.min(0.95, Number(els.trackingConfidence.value) || 0.55)),
-    searchRadius: Math.min(250, Math.ceil(Math.max(1, Number(els.trackingMaxMove.value) || 50) * Math.max(1, frameDelta))),
+    ...constraint,
+    searchRadius: Math.min(250, Math.ceil(constraint.maxMove * Math.max(1, frameDelta))),
   };
 }
 
@@ -1881,6 +1884,38 @@ async function trackPointBetweenFrames(sourceFrame, targetFrame, point) {
   const move = Math.hypot(result.x - point.x, result.y - point.y);
   const maxMove = options.maxMove * Math.max(1, Math.abs(targetFrame - sourceFrame));
   return { ...result, move, maxMove, threshold: options.confidence };
+}
+
+async function trackPointsBetweenFrames(sourceFrame, targetFrame, items) {
+  if (!globalThis.VideoDigitizerPointTracker?.trackMany) {
+    throw new Error("複数点画像追跡モジュールを読み込めませんでした");
+  }
+  const [sourceImage, targetImage] = await Promise.all([
+    loadProcessingImage(sourceFrame),
+    loadProcessingImage(targetFrame),
+  ]);
+  const frameDelta = Math.abs(targetFrame - sourceFrame);
+  const requests = items.map((item) => ({
+    point: item.point,
+    options: trackingOptionsForMarker(item.marker, frameDelta),
+  }));
+  const responses = await globalThis.VideoDigitizerPointTracker.trackMany(sourceImage, targetImage, requests);
+  return responses.map((response, index) => {
+    const item = items[index];
+    const options = requests[index].options;
+    if (!response?.ok) return { marker: item.marker, ok: false, error: response?.error || "画像追跡に失敗しました" };
+    const result = response.result;
+    return {
+      marker: item.marker,
+      ok: true,
+      result: {
+        ...result,
+        move: Math.hypot(result.x - item.point.x, result.y - item.point.y),
+        maxMove: options.maxMove * Math.max(1, frameDelta),
+        threshold: options.confidence,
+      },
+    };
+  });
 }
 
 function trackedPointFromResult(result, sourceFrame) {
@@ -1940,13 +1975,13 @@ function anchorTrackingFatalReason(result) {
   return "";
 }
 
-function fuseAnchorTrackingPoint(forward, backward, index, lastIndex, startFrame, endFrame) {
+function fuseAnchorTrackingPoint(forward, backward, index, lastIndex, startFrame, endFrame, options = currentTrackingOptions()) {
   const progress = index / lastIndex;
   const forwardWeight = Math.max(0.05, 1 - progress) * Math.max(0.05, forward.confidence);
   const backwardWeight = Math.max(0.05, progress) * Math.max(0.05, backward.confidence);
   const weightTotal = forwardWeight + backwardWeight;
   const disagreement = Math.hypot(forward.x - backward.x, forward.y - backward.y);
-  const tolerance = Math.max(2, currentTrackingOptions().patchRadius * 0.5);
+  const tolerance = Math.max(2, options.patchRadius * 0.5);
   const agreementConfidence = Math.exp(-disagreement / Math.max(1, tolerance));
   const confidence = Math.max(0, Math.min(1,
     Math.sqrt(forward.confidence * backward.confidence) * (0.55 + 0.45 * agreementConfidence),
@@ -1967,6 +2002,182 @@ function fuseAnchorTrackingPoint(forward, backward, index, lastIndex, startFrame
       method: "anchor_bidirectional_zncc_v1",
     },
   }, "anchor_bidirectional_zncc", confidence);
+}
+
+function batchAnchorCandidates(startFrame) {
+  const candidates = [];
+  for (const marker of state.markers) {
+    const startPoint = getPoint(startFrame, marker);
+    if (startPoint?.src !== "manual") continue;
+    const endAnchor = findNextManualTrackingAnchor(marker, startFrame);
+    if (!endAnchor || trackingFramesBetween(startFrame, endAnchor.frame).length <= 2) continue;
+    candidates.push({ marker, startPoint, endAnchor });
+  }
+  return candidates;
+}
+
+async function trackAnchorCandidateGroup(candidates, startFrame, job, groupIndex, groupTotal) {
+  const endFrame = candidates[0].endAnchor.frame;
+  const frames = trackingFramesBetween(startFrame, endFrame);
+  const candidateByMarker = new Map(candidates.map((candidate) => [candidate.marker, candidate]));
+  const forward = new Map(candidates.map((candidate) => [
+    candidate.marker,
+    new Map([[startFrame, { x: candidate.startPoint.x, y: candidate.startPoint.y, confidence: 1 }]]),
+  ]));
+  const backward = new Map(candidates.map((candidate) => [
+    candidate.marker,
+    new Map([[endFrame, { x: candidate.endAnchor.point.x, y: candidate.endAnchor.point.y, confidence: 1 }]]),
+  ]));
+  const failures = new Map();
+  let activeMarkers = new Set(candidates.map((candidate) => candidate.marker));
+
+  for (let index = 1; index < frames.length && activeMarkers.size && !job.cancelled; index += 1) {
+    els.jobStatus.textContent = `処理: ${groupIndex}/${groupTotal}区間 順方向 ${index}/${frames.length - 1} / ${activeMarkers.size}点`;
+    const items = [...activeMarkers].map((marker) => ({
+      marker,
+      point: forward.get(marker).get(frames[index - 1]),
+    }));
+    const outcomes = await trackPointsBetweenFrames(frames[index - 1], frames[index], items);
+    for (const outcome of outcomes) {
+      if (!outcome.ok) {
+        failures.set(outcome.marker, outcome.error);
+        activeMarkers.delete(outcome.marker);
+        continue;
+      }
+      const failure = anchorTrackingFatalReason(outcome.result);
+      if (failure) {
+        failures.set(outcome.marker, failure);
+        activeMarkers.delete(outcome.marker);
+        continue;
+      }
+      forward.get(outcome.marker).set(frames[index], outcome.result);
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+
+  activeMarkers = new Set([...activeMarkers].filter((marker) => forward.get(marker).has(endFrame)));
+  for (let index = frames.length - 2; index >= 0 && activeMarkers.size && !job.cancelled; index -= 1) {
+    els.jobStatus.textContent = `処理: ${groupIndex}/${groupTotal}区間 逆方向 ${frames.length - 1 - index}/${frames.length - 1} / ${activeMarkers.size}点`;
+    const items = [...activeMarkers].map((marker) => ({
+      marker,
+      point: backward.get(marker).get(frames[index + 1]),
+    }));
+    const outcomes = await trackPointsBetweenFrames(frames[index + 1], frames[index], items);
+    for (const outcome of outcomes) {
+      if (!outcome.ok) {
+        failures.set(outcome.marker, outcome.error);
+        activeMarkers.delete(outcome.marker);
+        continue;
+      }
+      const failure = anchorTrackingFatalReason(outcome.result);
+      if (failure) {
+        failures.set(outcome.marker, failure);
+        activeMarkers.delete(outcome.marker);
+        continue;
+      }
+      backward.get(outcome.marker).set(frames[index], outcome.result);
+    }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+
+  const entries = [];
+  const completedMarkers = [];
+  let uncertainCount = 0;
+  for (const marker of activeMarkers) {
+    if (!backward.get(marker).has(startFrame)) continue;
+    completedMarkers.push(marker);
+    const options = trackingOptionsForMarker(marker);
+    for (let index = 1; index < frames.length - 1; index += 1) {
+      const frame = frames[index];
+      if (getPoint(frame, marker)) continue;
+      const tracked = fuseAnchorTrackingPoint(
+        forward.get(marker).get(frame), backward.get(marker).get(frame),
+        index, frames.length - 1, startFrame, endFrame, options,
+      );
+      const uncertain = tracked.quality.track_disagreement > Math.max(3, options.patchRadius * 0.75)
+        || tracked.quality.confidence < Math.max(0.7, options.confidence + 0.1);
+      if (uncertain) uncertainCount += 1;
+      entries.push({
+        frame,
+        marker,
+        point: tracked,
+        flag: uncertain ? { status: "uncertain", updated_at: new Date().toISOString() } : null,
+      });
+    }
+  }
+  for (const marker of candidateByMarker.keys()) {
+    if (!completedMarkers.includes(marker) && !failures.has(marker)) failures.set(marker, "追跡区間を完走できませんでした");
+  }
+  return { entries, completedMarkers, failures, uncertainCount, endFrame };
+}
+
+async function trackAllMarkersBetweenManualAnchors() {
+  if (!state.ready || state.seeking) {
+    setStatus(state.seeking ? "フレーム移動が終わってから追跡してください" : "先に動画を開いてください");
+    return;
+  }
+  const startFrame = state.frame;
+  const candidates = batchAnchorCandidates(startFrame);
+  if (!candidates.length) {
+    setStatus(`${startFrame}F と後方フレームに対応する手入力アンカーがありません`);
+    return;
+  }
+  const groups = new Map();
+  for (const candidate of candidates) {
+    const key = candidate.endAnchor.frame;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(candidate);
+  }
+  const job = beginBackgroundJob(`${candidates.length}点を両方向追跡`);
+  if (!job) {
+    setStatus("別の処理が実行中です");
+    return;
+  }
+  const entries = [];
+  const completedMarkers = [];
+  const failures = new Map();
+  let uncertainCount = 0;
+  let applied = false;
+  try {
+    let groupIndex = 0;
+    for (const group of groups.values()) {
+      if (job.cancelled) break;
+      groupIndex += 1;
+      const result = await trackAnchorCandidateGroup(group, startFrame, job, groupIndex, groups.size);
+      entries.push(...result.entries);
+      completedMarkers.push(...result.completedMarkers);
+      uncertainCount += result.uncertainCount;
+      for (const [marker, reason] of result.failures) failures.set(marker, reason);
+    }
+    if (entries.length) {
+      setPointsBatch(entries);
+      applied = true;
+    }
+    recordAudit("track_all_between_manual_anchors", {
+      start_frame: startFrame,
+      candidate_count: candidates.length,
+      completed_markers: completedMarkers,
+      generated_count: entries.length,
+      uncertain_count: uncertainCount,
+      failures: Object.fromEntries(failures),
+      cancelled: job.cancelled,
+      method: "anchor_bidirectional_zncc_batch_v1",
+    });
+    if (entries.length) {
+      const first = entries[0];
+      state.activeMarker = first.marker;
+      state.selected = { frame: first.frame, marker: first.marker };
+      seekFrame(first.frame);
+      renderAll();
+    }
+    const message = job.cancelled
+      ? `全点追跡を中止しました / 完了 ${completedMarkers.length}点 / 生成 ${entries.length}点`
+      : `全点追跡完了 ${completedMarkers.length}/${candidates.length}点 / 生成 ${entries.length}点 / 要確認 ${uncertainCount}点 / 失敗 ${failures.size}点`;
+    finishBackgroundJob(job, message);
+  } catch (error) {
+    if (entries.length && !applied) setPointsBatch(entries);
+    finishBackgroundJob(job, `全点追跡に失敗しました: ${error.message} / ${entries.length}点を保持`);
+  }
 }
 
 async function trackActiveMarkerBetweenManualAnchors() {
@@ -6187,6 +6398,7 @@ els.predictPoint.addEventListener("click", predictCurrentPointFromPreviousFrames
 els.trackNextPoint.addEventListener("click", trackActivePointToNextFrame);
 els.trackMarkerRange.addEventListener("click", trackActiveMarkerToRangeEnd);
 els.trackBetweenAnchors.addEventListener("click", trackActiveMarkerBetweenManualAnchors);
+els.trackAllBetweenAnchors.addEventListener("click", trackAllMarkersBetweenManualAnchors);
 els.runPoseAI.addEventListener("click", runPoseAIForCurrentFrame);
 els.acceptAISuggestion.addEventListener("click", acceptCurrentAISuggestion);
 els.acceptAIFrame.addEventListener("click", acceptCurrentFrameAISuggestions);

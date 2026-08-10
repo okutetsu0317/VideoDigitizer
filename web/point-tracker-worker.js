@@ -116,7 +116,7 @@ function searchPatch(source, sourcePoint, target, targetOrigin, radius, rangeX, 
   };
 }
 
-function trackPair(sourceBitmap, targetBitmap, point, options) {
+function trackPair(sourceBitmap, targetBitmap, point, options, keepBitmaps = false) {
   const started = performance.now();
   const maxRadiusAtPoint = Math.floor(Math.min(
     point.x,
@@ -134,8 +134,10 @@ function trackPair(sourceBitmap, targetBitmap, point, options) {
   const marginY = rangeY + patchRadius + 3;
   const source = luminanceRegion(sourceBitmap, point.x - marginX, point.y - marginY, point.x + marginX + 1, point.y + marginY + 1);
   const target = luminanceRegion(targetBitmap, point.x - marginX, point.y - marginY, point.x + marginX + 1, point.y + marginY + 1);
-  sourceBitmap.close();
-  targetBitmap.close();
+  if (!keepBitmaps) {
+    sourceBitmap.close();
+    targetBitmap.close();
+  }
 
   const sourcePoint = { x: Math.round(point.x), y: Math.round(point.y) };
   const forward = searchPatch(source, sourcePoint, target, sourcePoint, patchRadius, rangeX, rangeY);
@@ -165,7 +167,29 @@ function trackPair(sourceBitmap, targetBitmap, point, options) {
 }
 
 self.addEventListener("message", (event) => {
-  if (event.data.type !== "track") return;
+  if (!["track", "track-many"].includes(event.data.type)) return;
+  if (event.data.type === "track-many") {
+    try {
+      const results = (event.data.items || []).map((item) => {
+        try {
+          return {
+            ok: true,
+            result: trackPair(event.data.source, event.data.target, item.point, item.options || {}, true),
+          };
+        } catch (error) {
+          return { ok: false, error: error.message || String(error) };
+        }
+      });
+      event.data.source?.close();
+      event.data.target?.close();
+      self.postMessage({ id: event.data.id, ok: true, result: results });
+    } catch (error) {
+      event.data.source?.close();
+      event.data.target?.close();
+      self.postMessage({ id: event.data.id, ok: false, error: error.message || String(error) });
+    }
+    return;
+  }
   try {
     const result = trackPair(event.data.source, event.data.target, event.data.point, event.data.options || {});
     self.postMessage({ id: event.data.id, ok: true, result });
