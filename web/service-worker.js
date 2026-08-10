@@ -1,15 +1,15 @@
-const CACHE_NAME = "video-digitizer-shell-v2.2.0-perf3";
+const CACHE_NAME = "video-digitizer-shell-v2.2.0-perf4";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=2.2.0-perf3",
-  "./frame-source.js?v=2.2.0-perf3",
-  "./pwa.js?v=2.2.0-perf3",
-  "./ai-pose.js?v=2.2.0-perf3",
+  "./styles.css?v=2.2.0-perf4",
+  "./frame-source.js?v=2.2.0-perf4",
+  "./pwa.js?v=2.2.0-perf4",
+  "./ai-pose.js?v=2.2.0-perf4",
   "./ai-pose-worker.js?v=2.2.0",
-  "./point-tracker.js?v=2.2.0-perf3",
+  "./point-tracker.js?v=2.2.0-perf4",
   "./point-tracker-worker.js?v=2.2.0",
-  "./app.js?v=2.2.0-perf3",
+  "./app.js?v=2.2.0-perf4",
   "./version.json?v=2.2.0",
   "./manifest.webmanifest?v=2.2.0",
   "./icon-192.png?v=2.2.0",
@@ -35,7 +35,7 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.pathname.includes("/api/")) return;
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: event.request.mode === "navigate" ? "no-store" : "default" })
       .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));

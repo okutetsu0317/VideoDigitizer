@@ -3,6 +3,7 @@
 
   const DB_NAME = "video_digitizer_local";
   const STORE_NAME = "projects";
+  const BUILD_ID = "2.2.0-perf4";
 
   function openDatabase() {
     if (!global.indexedDB) return Promise.resolve(null);
@@ -49,8 +50,24 @@
 
   const standaloneWebMode = !new URLSearchParams(location.search).has("token");
   if (standaloneWebMode && (location.protocol === "http:" || location.protocol === "https:")) {
+    let refreshing = false;
+    navigator.serviceWorker?.addEventListener("controllerchange", () => {
+      if (refreshing) return;
+      const videoName = document.querySelector("#videoName")?.textContent?.trim() || "未選択";
+      const dirty = document.querySelector("#dirtyMark")?.textContent?.includes("*");
+      if (videoName === "未選択" && !dirty) {
+        refreshing = true;
+        location.reload();
+        return;
+      }
+      const status = document.querySelector("#statusText");
+      if (status) status.textContent = "更新があります。プロジェクト保存後にページを再読み込みしてください";
+    });
     window.addEventListener("load", () => {
-      navigator.serviceWorker?.register("./service-worker.js").catch(() => {});
+      navigator.serviceWorker
+        ?.register(`./service-worker.js?v=${BUILD_ID}`, { updateViaCache: "none" })
+        .then((registration) => registration.update())
+        .catch(() => {});
     });
   }
 })(globalThis);
