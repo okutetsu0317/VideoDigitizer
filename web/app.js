@@ -83,7 +83,7 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 const AI_SUGGESTION_VERSION = 1;
 const POSE_AI_MODEL = {
   id: "mediapipe_pose_landmarker_lite",
@@ -198,6 +198,8 @@ const els = {
   applyPointStatus: $("applyPointStatus"),
   copyPrevFrame: $("copyPrevFrame"),
   predictPoint: $("predictPoint"),
+  trackNextPoint: $("trackNextPoint"),
+  trackMarkerRange: $("trackMarkerRange"),
   runPoseAI: $("runPoseAI"),
   acceptAISuggestion: $("acceptAISuggestion"),
   acceptAIFrame: $("acceptAIFrame"),
@@ -207,6 +209,8 @@ const els = {
   aiStatus: $("aiStatus"),
   trackingMaxMove: $("trackingMaxMove"),
   trackingDirection: $("trackingDirection"),
+  trackingPatchRadius: $("trackingPatchRadius"),
+  trackingConfidence: $("trackingConfidence"),
   saveTrackingConstraint: $("saveTrackingConstraint"),
   nextReviewPoint: $("nextReviewPoint"),
   interpolationMethod: $("interpolationMethod"),
@@ -1356,11 +1360,12 @@ function setPoint(frame, marker, point, recordUndo = true) {
 function setPointsBatch(entries) {
   const undoItems = [];
   let hasFlags = false;
-  for (const { frame, marker, point } of entries) {
+  for (const { frame, marker, point, flag = null } of entries) {
     const row = ensureFrame(frame);
     const prev = row[marker] ? structuredClone(row[marker]) : null;
     const prevFlag = pointFlagAt(frame, marker) ? structuredClone(pointFlagAt(frame, marker)) : null;
-    if (prevFlag) hasFlags = true;
+    const nextFlag = flag ? structuredClone(flag) : null;
+    if (prevFlag || nextFlag) hasFlags = true;
     undoItems.push({
       frame,
       marker,
@@ -1369,10 +1374,10 @@ function setPointsBatch(entries) {
       prevPoint: prev,
       nextPoint: structuredClone(point),
       prevFlag,
-      nextFlag: null,
+      nextFlag,
     });
     row[marker] = point;
-    if (pointStatusAt(frame, marker) !== "valid") setPointFlagValue(frame, marker, null);
+    setPointFlagValue(frame, marker, nextFlag);
   }
   if (undoItems.length > 0) {
     state.undo.push({ kind: hasFlags ? "compound" : "points", items: undoItems });
@@ -1818,9 +1823,16 @@ function linearPredict(samples, frame) {
 
 function trackingConstraint(marker = state.activeMarker) {
   const saved = state.trackingConstraints[marker] || {};
+  const useCurrent = marker === state.activeMarker;
   return {
-    maxMove: Math.max(1, Number(saved.maxMove) || 50),
-    direction: ["horizontal", "vertical"].includes(saved.direction) ? saved.direction : "any",
+    maxMove: Math.max(1, Number(saved.maxMove) || (useCurrent ? Number(els.trackingMaxMove?.value) : 0) || 50),
+    direction: ["horizontal", "vertical"].includes(saved.direction)
+      ? saved.direction
+      : useCurrent && ["horizontal", "vertical"].includes(els.trackingDirection?.value)
+        ? els.trackingDirection.value
+        : "any",
+    patchRadius: Math.max(3, Math.min(24, Math.round(Number(saved.patchRadius) || (useCurrent ? Number(els.trackingPatchRadius?.value) : 0) || 8))),
+    confidence: Math.max(0.2, Math.min(0.95, Number(saved.confidence) || (useCurrent ? Number(els.trackingConfidence?.value) : 0) || 0.55)),
   };
 }
 
@@ -1828,9 +1840,196 @@ function saveTrackingConstraint() {
   state.trackingConstraints[state.activeMarker] = {
     maxMove: Math.max(1, Number(els.trackingMaxMove.value) || 50),
     direction: ["horizontal", "vertical"].includes(els.trackingDirection.value) ? els.trackingDirection.value : "any",
+    patchRadius: Math.max(3, Math.min(24, Math.round(Number(els.trackingPatchRadius.value) || 8))),
+    confidence: Math.max(0.2, Math.min(0.95, Number(els.trackingConfidence.value) || 0.55)),
   };
   markDirty();
   setStatus(`${state.activeMarker} の追跡制約を保存しました`);
+}
+
+function currentTrackingOptions(frameDelta = 1) {
+  return {
+    maxMove: Math.max(1, Number(els.trackingMaxMove.value) || 50),
+    direction: ["horizontal", "vertical"].includes(els.trackingDirection.value) ? els.trackingDirection.value : "any",
+    patchRadius: Math.max(3, Math.min(24, Math.round(Number(els.trackingPatchRadius.value) || 8))),
+    confidence: Math.max(0.2, Math.min(0.95, Number(els.trackingConfidence.value) || 0.55)),
+    searchRadius: Math.min(250, Math.ceil(Math.max(1, Number(els.trackingMaxMove.value) || 50) * Math.max(1, frameDelta))),
+  };
+}
+
+function loadProcessingImage(frame) {
+  return fetchFrameBlobUrl(frame, state.frameCacheToken).then((url) => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`${frame}F の画像を読み込めませんでした`));
+    image.src = url;
+  }));
+}
+
+async function trackPointBetweenFrames(sourceFrame, targetFrame, point) {
+  if (!globalThis.VideoDigitizerPointTracker?.track) {
+    throw new Error("画像追跡モジュールを読み込めませんでした");
+  }
+  const [sourceImage, targetImage] = await Promise.all([
+    loadProcessingImage(sourceFrame),
+    loadProcessingImage(targetFrame),
+  ]);
+  const options = currentTrackingOptions(Math.abs(targetFrame - sourceFrame));
+  const result = await globalThis.VideoDigitizerPointTracker.track(sourceImage, targetImage, point, options);
+  const move = Math.hypot(result.x - point.x, result.y - point.y);
+  const maxMove = options.maxMove * Math.max(1, Math.abs(targetFrame - sourceFrame));
+  return { ...result, move, maxMove, threshold: options.confidence };
+}
+
+function trackedPointFromResult(result, sourceFrame) {
+  return trackPointFrom({
+    x: result.x,
+    y: result.y,
+    quality: {
+      confidence: result.confidence,
+      note: "template_zncc_forward_backward",
+      track_score: result.score,
+      track_error: result.backward_error,
+      match_margin: result.score - result.second_score,
+      source_frame: sourceFrame,
+      patch_radius: result.patch_radius,
+      search_radius_x: result.search_radius_x,
+      search_radius_y: result.search_radius_y,
+      elapsed_ms: result.elapsed_ms,
+      method: result.method,
+    },
+  }, "template_zncc_forward_backward", result.confidence);
+}
+
+function trackingFailureReason(result) {
+  if (result.move > result.maxMove + 1e-6) return `移動量 ${result.move.toFixed(1)}px が上限を超えました`;
+  if (result.backward_error > 4) return `往復誤差 ${result.backward_error.toFixed(2)}px が大きすぎます`;
+  if (result.confidence < result.threshold) return `信頼度 ${result.confidence.toFixed(2)} が基準未満です`;
+  return "";
+}
+
+function trackedPointFlag(result) {
+  return result.confidence < Math.max(0.7, result.threshold + 0.1)
+    ? { status: "uncertain", updated_at: new Date().toISOString() }
+    : null;
+}
+
+async function trackActivePointToNextFrame() {
+  if (!state.ready || state.seeking) {
+    setStatus(state.seeking ? "フレーム移動が終わってから追跡してください" : "先に動画を開いてください");
+    return;
+  }
+  const sourceFrame = state.frame;
+  const targetFrame = frameByStep(sourceFrame, 1);
+  if (targetFrame <= sourceFrame) {
+    setStatus("デジタイズ範囲の最終フレームです");
+    return;
+  }
+  const marker = state.activeMarker;
+  const point = getPoint(sourceFrame, marker);
+  if (!point) {
+    setStatus(`${sourceFrame}F の ${marker} を先に入力してください`);
+    return;
+  }
+  if (getPoint(targetFrame, marker)) {
+    moveToMarkerFrame(targetFrame, marker, `${targetFrame}F には既に点があります`);
+    return;
+  }
+  const job = beginBackgroundJob(`${marker} ${sourceFrame}F→${targetFrame}F`);
+  if (!job) {
+    setStatus("別の処理が実行中です");
+    return;
+  }
+  try {
+    const result = await trackPointBetweenFrames(sourceFrame, targetFrame, point);
+    const failure = trackingFailureReason(result);
+    if (failure) {
+      finishBackgroundJob(job, `画像追跡を採用しませんでした: ${failure}`);
+      return;
+    }
+    setPointsBatch([{ frame: targetFrame, marker, point: trackedPointFromResult(result, sourceFrame), flag: trackedPointFlag(result) }]);
+    recordAudit("track_point_image", { source_frame: sourceFrame, target_frame: targetFrame, marker, ...result });
+    state.activeMarker = marker;
+    state.selected = { frame: targetFrame, marker };
+    seekFrame(targetFrame);
+    renderAll();
+    finishBackgroundJob(job, `${marker} を ${targetFrame}F へ追跡しました / 信頼度 ${result.confidence.toFixed(2)}`);
+  } catch (error) {
+    finishBackgroundJob(job, `画像追跡に失敗しました: ${error.message}`);
+  }
+}
+
+async function trackActiveMarkerToRangeEnd() {
+  if (!state.ready || state.seeking) {
+    setStatus(state.seeking ? "フレーム移動が終わってから追跡してください" : "先に動画を開いてください");
+    return;
+  }
+  const marker = state.activeMarker;
+  let sourceFrame = state.frame;
+  let sourcePoint = getPoint(sourceFrame, marker);
+  if (!sourcePoint) {
+    setStatus(`${sourceFrame}F の ${marker} を先に入力してください`);
+    return;
+  }
+  const job = beginBackgroundJob(`${marker} を範囲追跡`);
+  if (!job) {
+    setStatus("別の処理が実行中です");
+    return;
+  }
+  const entries = [];
+  let lastFrame = sourceFrame;
+  let stoppedReason = "";
+  try {
+    while (!job.cancelled && sourceFrame < state.trimEnd) {
+      const targetFrame = frameByStep(sourceFrame, 1);
+      if (targetFrame <= sourceFrame) break;
+      const anchor = getPoint(targetFrame, marker);
+      if (anchor) {
+        sourceFrame = targetFrame;
+        sourcePoint = anchor;
+        lastFrame = targetFrame;
+        continue;
+      }
+      els.jobStatus.textContent = `処理: ${marker} ${sourceFrame}F→${targetFrame}F / ${entries.length}点`;
+      const result = await trackPointBetweenFrames(sourceFrame, targetFrame, sourcePoint);
+      stoppedReason = trackingFailureReason(result);
+      if (stoppedReason) break;
+      const point = trackedPointFromResult(result, sourceFrame);
+      entries.push({ frame: targetFrame, marker, point, flag: trackedPointFlag(result) });
+      sourceFrame = targetFrame;
+      sourcePoint = point;
+      lastFrame = targetFrame;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    if (entries.length) {
+      setPointsBatch(entries);
+      recordAudit("track_marker_range_image", {
+        marker,
+        start_frame: state.frame,
+        end_frame: lastFrame,
+        count: entries.length,
+        cancelled: job.cancelled,
+        stopped_reason: stoppedReason,
+      });
+      state.selected = { frame: lastFrame, marker };
+      seekFrame(lastFrame);
+      renderAll();
+    }
+    const message = job.cancelled
+      ? `画像追跡を中止しました: ${entries.length}点`
+      : stoppedReason
+        ? `画像追跡は ${lastFrame}F で停止: ${stoppedReason} / ${entries.length}点を保持`
+        : `${marker} を ${lastFrame}F まで画像追跡しました: ${entries.length}点`;
+    finishBackgroundJob(job, message);
+  } catch (error) {
+    if (entries.length) {
+      setPointsBatch(entries);
+      state.selected = { frame: lastFrame, marker };
+      seekFrame(lastFrame);
+      renderAll();
+    }
+    finishBackgroundJob(job, `画像追跡は ${lastFrame}F で停止しました: ${error.message} / ${entries.length}点を保持`);
+  }
 }
 
 function predictCurrentPointFromPreviousFrames() {
@@ -3776,6 +3975,8 @@ function renderAll() {
   const constraint = trackingConstraint(state.activeMarker);
   if (els.trackingMaxMove) els.trackingMaxMove.value = String(constraint.maxMove);
   if (els.trackingDirection) els.trackingDirection.value = constraint.direction;
+  if (els.trackingPatchRadius) els.trackingPatchRadius.value = String(constraint.patchRadius);
+  if (els.trackingConfidence) els.trackingConfidence.value = String(constraint.confidence);
   updateAIStatus();
   updateStatus();
   renderMarkers();
@@ -4029,7 +4230,10 @@ function exportCsv() {
   const transform = calibrationTransform();
   const headers = ["global_frame", "time_sec", "local_frame", "local_time_sec", ...metadataHeaders];
   for (const marker of state.markers) {
-    headers.push(`${marker}_x`, `${marker}_y`, `${marker}_src`, `${marker}_quality_note`, `${marker}_status`, `${marker}_analysis_x`, `${marker}_analysis_y`);
+    headers.push(
+      `${marker}_x`, `${marker}_y`, `${marker}_src`, `${marker}_quality_note`, `${marker}_confidence`,
+      `${marker}_track_score`, `${marker}_track_error`, `${marker}_status`, `${marker}_analysis_x`, `${marker}_analysis_y`,
+    );
     if (transform) headers.push(`${marker}_real_x`, `${marker}_real_y`);
   }
   if (transform) headers.push("real_unit");
@@ -4044,6 +4248,9 @@ function exportCsv() {
       const analysisPoint = coordinatePoint(p);
       row.push(
         p ? formatCoord(p.x) : "", p ? formatCoord(p.y) : "", p?.src ?? "", p?.quality?.note ?? "",
+        Number.isFinite(Number(p?.quality?.confidence)) ? Number(p.quality.confidence).toFixed(4) : "",
+        Number.isFinite(Number(p?.quality?.track_score)) ? Number(p.quality.track_score).toFixed(6) : "",
+        Number.isFinite(Number(p?.quality?.track_error)) ? Number(p.quality.track_error).toFixed(4) : "",
         pointStatusAt(frame, marker), analysisPoint ? formatCoord(analysisPoint.x) : "", analysisPoint ? formatCoord(analysisPoint.y) : "",
       );
       if (transform) {
@@ -4721,7 +4928,7 @@ function digitizeSnapshot() {
   const transform = calibrationTransform();
   const coordinates = digitizeCoordinates(transform);
   return {
-    version: 3,
+    version: 4,
     video: {
       name: state.videoName,
       fps: state.fps,
@@ -4788,7 +4995,7 @@ function projectPayload() {
   const digitize = digitizeSnapshot();
   return {
     schema: PROJECT_SCHEMA,
-    project_version: 5,
+    project_version: 6,
     saved_at: new Date().toISOString(),
     video_name: state.videoName,
     video_identity: state.videoIdentity,
@@ -4838,6 +5045,8 @@ function projectPayload() {
       trail_length: Math.max(0, Math.round(Number(els.trailInput.value) || 0)),
       trail_mode: els.trailMode.value,
       tracking_max_move: Math.max(1, Number(els.trackingMaxMove?.value) || 50),
+      tracking_patch_radius: Math.max(3, Math.min(24, Math.round(Number(els.trackingPatchRadius?.value) || 8))),
+      tracking_confidence: Math.max(0.2, Math.min(0.95, Number(els.trackingConfidence?.value) || 0.55)),
       show_ai_suggestions: els.showAISuggestions.checked,
       workspace: workspaceSettings(),
     },
@@ -5411,6 +5620,8 @@ function loadProject(file) {
         els.trailInput.value = String(Math.max(0, Math.round(Number(payload.ui_settings.trail_length) || 0)));
         els.trailMode.value = payload.ui_settings.trail_mode || "active";
         els.trackingMaxMove.value = String(Math.max(1, Number(payload.ui_settings.tracking_max_move) || 50));
+        els.trackingPatchRadius.value = String(Math.max(3, Math.min(24, Math.round(Number(payload.ui_settings.tracking_patch_radius) || 8))));
+        els.trackingConfidence.value = String(Math.max(0.2, Math.min(0.95, Number(payload.ui_settings.tracking_confidence) || 0.55)));
         els.showAISuggestions.checked = payload.ui_settings.show_ai_suggestions !== false;
         applyWorkspaceSettings(payload.ui_settings.workspace || {});
       }
@@ -5815,6 +6026,8 @@ els.shutdownApp.addEventListener("click", shutdownApp);
 els.copyPrevPoint.addEventListener("click", copyPreviousPoint);
 els.copyPrevFrame.addEventListener("click", copyPreviousFramePoints);
 els.predictPoint.addEventListener("click", predictCurrentPointFromPreviousFrames);
+els.trackNextPoint.addEventListener("click", trackActivePointToNextFrame);
+els.trackMarkerRange.addEventListener("click", trackActiveMarkerToRangeEnd);
 els.runPoseAI.addEventListener("click", runPoseAIForCurrentFrame);
 els.acceptAISuggestion.addEventListener("click", acceptCurrentAISuggestion);
 els.acceptAIFrame.addEventListener("click", acceptCurrentFrameAISuggestions);
