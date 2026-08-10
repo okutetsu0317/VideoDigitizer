@@ -41,8 +41,15 @@
               </button>
               <button id="restoreAccountCache" type="button" disabled>前回の作業を復元</button>
               <button id="deleteAccountCache" type="button" disabled>自動保存を削除</button>
+              <label id="cloudSyncField" class="checkbox-field cloud-sync-field" hidden>
+                デジタイズデータをクラウド保存
+                <input id="cloudSyncEnabled" type="checkbox" />
+              </label>
+              <button id="restoreCloudProject" type="button" hidden>最新のクラウド保存を復元</button>
+              <button id="finalizeCloudProject" type="button" hidden>クラウド座標を確定</button>
+              <button id="deleteCloudProject" type="button" hidden>クラウド保存を削除</button>
               <button id="googleSignOut" type="button" disabled>ログアウト</button>
-              <p class="privacy-note">動画と座標はGoogleへ送信せず、このMac内へアカウント別に保存します。<a href="./privacy.html" target="_blank" rel="noopener">プライバシー</a></p>
+              <p class="privacy-note">動画・画像・ローカルパスはクラウドへ送信しません。クラウド保存をONにした場合だけ、デジタイズデータを5分ごとに同期します。<a href="./privacy.html" target="_blank" rel="noopener">プライバシー</a></p>
             </div>
           </details>
 

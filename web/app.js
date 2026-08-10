@@ -117,6 +117,15 @@ function createSessionId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function createCloudProjectId() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+    return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+  return Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+}
+
 const els = {
   frameImage: $("frameImage"),
   openVideoButton: $("openVideoButton"),
@@ -315,6 +324,11 @@ const els = {
   googleSignOut: $("googleSignOut"),
   restoreAccountCache: $("restoreAccountCache"),
   deleteAccountCache: $("deleteAccountCache"),
+  cloudSyncField: $("cloudSyncField"),
+  cloudSyncEnabled: $("cloudSyncEnabled"),
+  restoreCloudProject: $("restoreCloudProject"),
+  finalizeCloudProject: $("finalizeCloudProject"),
+  deleteCloudProject: $("deleteCloudProject"),
 };
 for (const [, id] of METADATA_FIELDS) els[id] = $(id);
 for (let index = 1; index <= 4; index += 1) {
@@ -387,9 +401,19 @@ const state = {
   backgroundJob: null,
   account: {
     configured: false,
+    enabled: false,
     authenticated: false,
     profile: null,
     lastSavedAt: 0,
+  },
+  cloud: {
+    projectId: createCloudProjectId(),
+    generation: "",
+    configured: false,
+    syncing: false,
+    dirty: true,
+    lastSyncedAt: 0,
+    conflict: false,
   },
   trackingConstraints: {},
   skeletonSegments: SKELETON_SEGMENTS.map((segment) => segment.slice()),
@@ -449,6 +473,7 @@ function updateAppMode() {
 
 function markDirty() {
   state.dirty = true;
+  state.cloud.dirty = true;
   updateStatus();
 }
 
@@ -5684,6 +5709,12 @@ function digitizeSnapshot() {
     visible_markers: visibleMarkerList(),
     hidden_markers: hiddenMarkerList(),
     active_marker: state.activeMarker,
+    cloud_sync: {
+      project_id: state.cloud.projectId,
+      generation: state.cloud.generation,
+      last_synced_at: state.cloud.lastSyncedAt,
+      enabled: state.cloud.enabled,
+    },
     skeleton_segments: state.skeletonSegments,
     tracking_constraints: state.trackingConstraints,
     calibration: {
@@ -5831,6 +5862,65 @@ function autosaveJsonText() {
   return JSON.stringify(autosavePayload());
 }
 
+const CLOUD_POINT_QUALITY_FIELDS = [
+  "confidence", "note", "track_score", "track_error", "track_disagreement", "match_margin",
+  "source_frame", "patch_radius", "search_radius_x", "search_radius_y", "elapsed_ms", "method",
+  "forward_confidence", "backward_confidence", "start_anchor_frame", "end_anchor_frame", "alpha",
+  "anchor_start", "anchor_end", "model_id", "model_version", "runtime", "suggestion_id",
+  "landmark_index", "generated_at", "accepted_at", "device", "input_resolution", "visible", "redetected",
+];
+
+function cloudScalarFields(source, fields) {
+  const output = {};
+  if (!source || typeof source !== "object" || Array.isArray(source)) return output;
+  for (const field of fields) {
+    const value = source[field];
+    if (value === null || ["string", "boolean"].includes(typeof value)) output[field] = value;
+    else if (typeof value === "number" && Number.isFinite(value)) output[field] = value;
+  }
+  return output;
+}
+
+function cloudPointStore() {
+  const output = {};
+  for (const [frameKey, row] of Object.entries(state.points)) {
+    const frame = Number(frameKey);
+    if (!Number.isInteger(frame) || frame < state.trimStart || frame > state.trimEnd || !row || typeof row !== "object") continue;
+    const cleanRow = {};
+    for (const marker of state.markers) {
+      const point = row[marker];
+      if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) continue;
+      cleanRow[marker] = {
+        x: Number(point.x),
+        y: Number(point.y),
+        src: ["manual", "interp", "ai", "track"].includes(point.src) ? point.src : "",
+        quality: cloudScalarFields(point.quality, CLOUD_POINT_QUALITY_FIELDS),
+      };
+    }
+    if (Object.keys(cleanRow).length) output[String(frame)] = cleanRow;
+  }
+  return output;
+}
+
+function cloudPointFlagStore() {
+  const output = {};
+  for (const [frameKey, row] of Object.entries(state.pointFlags)) {
+    const frame = Number(frameKey);
+    if (!Number.isInteger(frame) || frame < state.trimStart || frame > state.trimEnd || !row || typeof row !== "object") continue;
+    const cleanRow = {};
+    for (const marker of state.markers) {
+      const flag = row[marker];
+      if (!flag || !POINT_STATUS_LABELS[String(flag.status)]) continue;
+      cleanRow[marker] = {
+        status: String(flag.status),
+        ...cloudScalarFields(flag, ["updated_at", "confidence", "model_id", "model_version"]),
+      };
+    }
+    if (Object.keys(cleanRow).length) output[String(frame)] = cleanRow;
+  }
+  return output;
+}
+
 function cloudDigitizePayload() {
   normalizeTrim();
   readCalibrationSettings();
@@ -5851,22 +5941,31 @@ function cloudDigitizePayload() {
     frame_range: { start: state.trimStart, end: state.trimEnd },
     markers: [...state.markers],
     skeleton_segments: state.skeletonSegments.map((segment) => [...segment]),
-    tracking_constraints: structuredClone(state.trackingConstraints),
+    tracking_constraints: Object.fromEntries(state.markers.map((marker) => [
+      marker,
+      cloudScalarFields(state.trackingConstraints[marker], ["maxMove", "direction", "patchRadius", "confidence"]),
+    ]).filter(([, value]) => Object.keys(value).length)),
     calibration: {
       method: "four_point",
-      points: structuredClone(state.calibration.points),
-      real_points: structuredClone(state.calibration.realPoints),
+      points: state.calibration.points.slice(0, 4).map((point, index) => ({
+        label: `calib_p${index + 1}`,
+        x: Number(point.x),
+        y: Number(point.y),
+      })),
+      real_points: state.calibration.realPoints.slice(0, 4).map((point) => ({ x: Number(point.x), y: Number(point.y) })),
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       lens: structuredClone(state.lens),
     },
     timing: {
       mode: Object.keys(state.frameTimestamps).length ? "per_frame" : "constant_fps",
-      frame_timestamps: structuredClone(state.frameTimestamps),
+      frame_timestamps: Object.fromEntries(Object.entries(state.frameTimestamps).filter(([frame, value]) => (
+        Number(frame) >= state.trimStart && Number(frame) <= state.trimEnd && Number.isFinite(Number(value))
+      )).map(([frame, value]) => [String(Number(frame)), Number(value)])),
     },
     coordinate_system: structuredClone(state.coordinateSystem),
-    points: structuredClone(state.points),
-    point_flags: structuredClone(state.pointFlags),
+    points: cloudPointStore(),
+    point_flags: cloudPointFlagStore(),
   };
 }
 
@@ -5951,15 +6050,95 @@ function updateAccountUI() {
   els.googleSignOut.disabled = !account.authenticated;
   els.restoreAccountCache.disabled = !account.authenticated;
   els.deleteAccountCache.disabled = !account.authenticated;
+  const cloudAvailable = localApp && account.authenticated && state.cloud.configured;
+  els.cloudSyncField.hidden = !cloudAvailable;
+  els.cloudSyncEnabled.checked = state.cloud.enabled;
+  els.cloudSyncEnabled.disabled = !cloudAvailable;
+  els.restoreCloudProject.hidden = !cloudAvailable;
+  els.finalizeCloudProject.hidden = !cloudAvailable;
+  els.finalizeCloudProject.disabled = !state.cloud.enabled || !state.cloud.generation || state.cloud.conflict;
+  els.deleteCloudProject.hidden = !cloudAvailable;
+  els.deleteCloudProject.disabled = !state.cloud.generation;
   if (!localApp) {
     els.accountStatus.textContent = "Googleログインとアカウント別保存はMacアプリ版で利用できます。";
   } else if (account.authenticated) {
     const saved = account.lastSavedAt ? ` / 自動保存 ${new Date(account.lastSavedAt).toLocaleTimeString()}` : "";
-    els.accountStatus.textContent = `${label}でログイン中${saved}`;
+    const cloud = state.cloud.configured
+      ? !state.cloud.enabled ? " / クラウドOFF"
+        : state.cloud.conflict ? " / クラウド競合"
+          : state.cloud.lastSyncedAt ? ` / クラウド ${new Date(state.cloud.lastSyncedAt).toLocaleTimeString()}`
+            : " / クラウド待機"
+      : "";
+    els.accountStatus.textContent = `${label}でログイン中${saved}${cloud}`;
   } else if (!account.configured) {
     els.accountStatus.textContent = "GoogleログインはOAuthクライアント設定後に利用できます。";
   } else {
     els.accountStatus.textContent = "ログインすると、このMac内の自動保存をアカウント別に分けられます。";
+  }
+}
+
+async function refreshCloudStatus() {
+  if (state.sourceMode !== "api" || !state.account.authenticated) {
+    state.cloud.configured = false;
+    updateAccountUI();
+    return state.cloud;
+  }
+  try {
+    const response = await fetch(localApiUrl("cloud/status"), { cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const status = await response.json();
+    state.cloud.configured = Boolean(status.configured);
+  } catch (_error) {
+    state.cloud.configured = false;
+  }
+  updateAccountUI();
+  return state.cloud;
+}
+
+async function syncCloudDigitize(options = {}) {
+  if (
+    state.sourceMode !== "api"
+    || !state.account.authenticated
+    || !state.cloud.configured
+    || !state.cloud.enabled
+    || state.cloud.syncing
+    || Object.keys(state.points).length === 0
+    || (!options.force && !state.cloud.dirty)
+  ) return null;
+
+  state.cloud.syncing = true;
+  try {
+    const response = await fetch(localApiUrl(options.finalize ? "cloud/finalize" : "cloud/sync"), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        project_id: state.cloud.projectId,
+        generation: state.cloud.generation,
+        payload: cloudDigitizePayload(),
+      }),
+    });
+    if (!response.ok) {
+      if (response.status === 409) {
+        state.cloud.conflict = true;
+        updateAccountUI();
+        setStatus("クラウド版が別の端末で更新されています。自動上書きを停止しました");
+        return null;
+      }
+      throw new Error(await apiErrorMessage(response));
+    }
+    const result = await response.json();
+    if (result.generation) state.cloud.generation = String(result.generation);
+    state.cloud.lastSyncedAt = Date.now();
+    state.cloud.dirty = false;
+    state.cloud.conflict = false;
+    updateAccountUI();
+    return result;
+  } catch (error) {
+    setStatus(`クラウド同期を保留しました: ${error.message}`);
+    return null;
+  } finally {
+    state.cloud.syncing = false;
   }
 }
 
@@ -5999,6 +6178,7 @@ async function startGoogleSignIn() {
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
       await refreshAccountStatus();
       if (state.account.authenticated) {
+        await refreshCloudStatus();
         setStatus("Googleログインが完了しました");
         return;
       }
@@ -6035,6 +6215,94 @@ async function deleteAccountAutosave() {
   } catch (error) {
     setStatus(`自動保存を削除できませんでした: ${error.message}`);
   }
+}
+
+async function deleteCloudProject() {
+  if (!state.cloud.generation) return;
+  if (!confirm("現在のプロジェクトのクラウド保存を削除しますか？\nMac内の動画とプロジェクトは削除されません。")) return;
+  try {
+    const response = await fetch(localApiUrl("cloud/delete"), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: state.cloud.projectId }),
+    });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    state.cloud.enabled = false;
+    state.cloud.generation = "";
+    state.cloud.lastSyncedAt = 0;
+    state.cloud.dirty = false;
+    state.cloud.conflict = false;
+    markDirty();
+    state.cloud.dirty = false;
+    updateAccountUI();
+    setStatus("クラウド上のデジタイズデータを削除しました");
+  } catch (error) {
+    setStatus(`クラウド保存を削除できませんでした: ${error.message}`);
+  }
+}
+
+function portableProjectFromCloud(cloudPayload, projectId, generation) {
+  const signature = cloudPayload.source_signature || {};
+  const range = cloudPayload.frame_range || {};
+  return {
+    schema: PROJECT_SCHEMA,
+    project_version: 6,
+    saved_at: cloudPayload.saved_at,
+    video_identity: { ...signature },
+    fps: Number(signature.fps) || 30,
+    trim_start: Number(range.start) || 0,
+    trim_end: Number(range.end) || 0,
+    markers: cloudPayload.markers,
+    calibration: cloudPayload.calibration,
+    timing: cloudPayload.timing,
+    coordinate_system: cloudPayload.coordinate_system,
+    points: cloudPayload.points,
+    point_flags: cloudPayload.point_flags,
+    cloud_sync: {
+      project_id: projectId,
+      generation,
+      last_synced_at: Date.now(),
+      enabled: true,
+    },
+    digitize: {
+      frame_range: range,
+      markers: cloudPayload.markers,
+      skeleton_segments: cloudPayload.skeleton_segments,
+      tracking_constraints: cloudPayload.tracking_constraints,
+      calibration: cloudPayload.calibration,
+      timing: cloudPayload.timing,
+      coordinate_system: cloudPayload.coordinate_system,
+      points: cloudPayload.points,
+      point_flags: cloudPayload.point_flags,
+    },
+  };
+}
+
+async function restoreLatestCloudProject() {
+  if (!confirm("最新のクラウド保存を読み込みますか？\n現在の未保存座標は上書きされ、動画はMac内のものを使います。")) return;
+  try {
+    const listResponse = await fetch(localApiUrl("cloud/projects"), { cache: "no-store" });
+    if (!listResponse.ok) throw new Error(await apiErrorMessage(listResponse));
+    const projects = (await listResponse.json()).projects || [];
+    if (!projects.length) throw new Error("クラウド保存がありません");
+    const latest = projects[0];
+    const response = await fetch(`${localApiUrl("cloud/project")}&project_id=${encodeURIComponent(latest.project_id)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const result = await response.json();
+    const portable = portableProjectFromCloud(result.payload, latest.project_id, result.generation);
+    loadProject(new File([JSON.stringify(portable)], "cloud_project.json", { type: "application/json" }));
+  } catch (error) {
+    setStatus(`クラウド保存を復元できませんでした: ${error.message}`);
+  }
+}
+
+async function finalizeCloudProject() {
+  if (!confirm("現在のクラウド座標を分析用データとして確定しますか？")) return;
+  const synced = await syncCloudDigitize({ force: true });
+  if (!synced || state.cloud.conflict) return;
+  const result = await syncCloudDigitize({ force: true, finalize: true });
+  if (result) setStatus(`クラウド座標を確定しました: ${Number(result.rows) || 0}点`);
 }
 
 async function writeAccountAutosave(text) {
@@ -6140,11 +6408,13 @@ async function saveProjectAs() {
     state.projectFileName = handle.name || defaultProjectFilename();
     cleanDirty();
     setStatus(`プロジェクトを保存しました: ${state.projectFileName} (${payload.digitize.stats.total_points}点)`);
+    syncCloudDigitize({ force: true });
     return;
   }
   downloadText(text, defaultProjectFilename(), "application/json");
   cleanDirty();
   setStatus(`プロジェクトを書き出しました: ${payload.digitize.stats.total_points}点`);
+  syncCloudDigitize({ force: true });
 }
 
 async function saveProject() {
@@ -6175,6 +6445,7 @@ async function overwriteProject() {
     await writeProjectHandle(state.projectFileHandle, text);
     cleanDirty();
     setStatus(`上書き保存しました: ${state.projectFileName || state.projectFileHandle.name} (${payload.digitize.stats.total_points}点)`);
+    syncCloudDigitize({ force: true });
   } catch (error) {
     if (error?.name === "AbortError") {
       setStatus("保存をキャンセルしました");
@@ -6456,6 +6727,14 @@ function loadProject(file) {
       const savedMarkers = Array.isArray(digitize.markers) ? digitize.markers : payload.markers;
       state.markers = Array.isArray(savedMarkers) ? savedMarkers.map(String) : state.markers;
       state.activeMarker = String(digitize.active_marker || payload.active_marker || state.markers[0]);
+      const savedCloud = payload.cloud_sync && typeof payload.cloud_sync === "object" ? payload.cloud_sync : {};
+      if (/^[a-f0-9]{32}$/.test(String(savedCloud.project_id || ""))) {
+        state.cloud.projectId = String(savedCloud.project_id);
+      }
+      state.cloud.generation = String(savedCloud.generation || "");
+      state.cloud.lastSyncedAt = Number(savedCloud.last_synced_at || 0);
+      state.cloud.enabled = savedCloud.enabled === true;
+      state.cloud.conflict = false;
       state.trackingConstraints = digitize.tracking_constraints && typeof digitize.tracking_constraints === "object"
         ? digitize.tracking_constraints
         : {};
@@ -7078,6 +7357,15 @@ els.googleSignIn.addEventListener("click", startGoogleSignIn);
 els.googleSignOut.addEventListener("click", signOutGoogle);
 els.restoreAccountCache.addEventListener("click", restoreAccountAutosave);
 els.deleteAccountCache.addEventListener("click", deleteAccountAutosave);
+els.cloudSyncEnabled.addEventListener("change", () => {
+  state.cloud.enabled = els.cloudSyncEnabled.checked;
+  markDirty();
+  updateAccountUI();
+  if (state.cloud.enabled) syncCloudDigitize({ force: true });
+});
+els.restoreCloudProject.addEventListener("click", restoreLatestCloudProject);
+els.finalizeCloudProject.addEventListener("click", finalizeCloudProject);
+els.deleteCloudProject.addEventListener("click", deleteCloudProject);
 for (const element of [
   els.workspaceSideWidth, els.workspaceDensity, els.shortcutPrev, els.shortcutNext, els.shortcutCopy, els.shortcutPredict,
 ]) {
@@ -7177,6 +7465,7 @@ els.clearDerived.addEventListener("click", clearDerived);
 
 window.addEventListener("resize", draw);
 window.setInterval(writeAutosave, 60_000);
+window.setInterval(syncCloudDigitize, 5 * 60_000);
 window.addEventListener("beforeunload", writeAutosave);
 window.addEventListener("copy", (event) => {
   if (isEditableTarget(event.target) || !state.ready) return;
@@ -7286,4 +7575,7 @@ try {
 }
 renderAll();
 refreshAITrackingCapabilities();
-refreshAccountStatus().then(restoreRecentLocalVideo).catch(() => {});
+refreshAccountStatus()
+  .then(refreshCloudStatus)
+  .then(restoreRecentLocalVideo)
+  .catch(() => {});

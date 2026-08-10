@@ -253,6 +253,18 @@ button:hover,
   color: var(--accent);
 }
 
+.cloud-sync-field {
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.cloud-sync-field:not([hidden]) {
+  display: grid;
+}
+
 .checkbox-field {
   grid-template-columns: 1fr auto;
   align-items: center;

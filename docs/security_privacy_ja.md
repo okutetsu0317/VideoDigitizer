@@ -4,9 +4,10 @@
 
 ## 基本方針
 
-- 動画、座標、研究メタデータ、AI推論は原則として利用者のMac内で処理する
+- 動画、画像、ローカルパス、研究メタデータ、AI推論は利用者のMac内だけで処理する
+- デジタイズ座標のクラウド保存はGoogleログイン後の明示的なON操作を必須とする
 - Googleログインは任意とし、`openid profile email` 以外の権限を要求しない
-- GoogleログインとGoogle Drive同期を別機能として扱う
+- クラウド保存にGoogle DriveやGoogle Workspaceの権限を使用しない
 - 認証情報を `localStorage`、`sessionStorage`、IndexedDB、プロジェクトJSONへ保存しない
 - 外部ページからlocalhost APIを操作できないよう、Host、Origin、一回限りbootstrap、HttpOnly Cookieを検証する
 
@@ -28,7 +29,19 @@ Google Cloud Consoleではアプリケーションの種類を `Desktop app` と
 
 アカウント固有ID `sub` のSHA-256をディレクトリ名に使用し、メールアドレスや氏名をファイルパスへ含めません。JSONは一時ファイルへ書き、`fsync` 後に置換します。ファイル権限は `0600`、1件の最大サイズは64MiBです。
 
-これは同じMac内での再開機能です。Google Driveや独自サーバーへ座標を送信せず、別端末同期は行いません。
+これは同じMac内での再開機能です。クラウド保存とは独立して動作します。
+
+## デジタイズデータのクラウド保存
+
+クラウド保存はMacアプリ版、Googleログイン済み、クラウドAPI設定済み、利用者によるONの
+4条件がそろった場合だけ動作します。5分ごとに明示的allowlistから作ったgzip JSONを送り、
+Cloud RunでGoogle ID tokenの対象クライアントとメール確認状態を検証します。保存対象は座標、
+点状態、マーカー、フレーム範囲、動画ハッシュ、FPS・解像度、較正・時刻・座標系設定です。
+動画・画像・サムネイル・ファイル名・パス・研究メタデータ・AI候補・監査ログは拒否します。
+
+Cloud Storageは非公開・世代管理、Firestoreは点数と更新時刻等の索引だけ、BigQueryは利用者が
+確定操作をした座標行だけを保存します。アカウント固有IDはサーバー秘密鍵付きHMACで匿名化し、
+別端末との同時更新はStorage generationによる楽観ロックで自動上書きを止めます。
 
 ## localhost API
 
