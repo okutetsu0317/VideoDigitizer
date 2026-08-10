@@ -1,15 +1,15 @@
-const CACHE_NAME = "video-digitizer-shell-v2.2.0-perf5";
+const CACHE_NAME = "video-digitizer-shell-v2.2.0-perf6";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=2.2.0-perf5",
-  "./frame-source.js?v=2.2.0-perf5",
-  "./pwa.js?v=2.2.0-perf5",
-  "./ai-pose.js?v=2.2.0-perf5",
+  "./styles.css?v=2.2.0-perf6",
+  "./frame-source.js?v=2.2.0-perf6",
+  "./pwa.js?v=2.2.0-perf6",
+  "./ai-pose.js?v=2.2.0-perf6",
   "./ai-pose-worker.js?v=2.2.0",
-  "./point-tracker.js?v=2.2.0-perf5",
+  "./point-tracker.js?v=2.2.0-perf6",
   "./point-tracker-worker.js?v=2.2.0",
-  "./app.js?v=2.2.0-perf5",
+  "./app.js?v=2.2.0-perf6",
   "./version.json?v=2.2.0",
   "./manifest.webmanifest?v=2.2.0",
   "./icon-192.png?v=2.2.0",

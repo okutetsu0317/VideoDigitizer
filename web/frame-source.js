@@ -448,15 +448,24 @@
 
       let didSeek = false;
       if (Math.abs(this.video.currentTime - targetTime) > Math.max(0.0001, frameDuration * 0.05)) {
+        // A paused, detached video may not emit another presentation callback
+        // after `seeked`. Subscribe before changing currentTime so Chrome's
+        // decoded target frame cannot be missed.
+        const presented = typeof this.video.requestVideoFrameCallback === "function"
+          ? this._waitForPresentedFrame(targetTime, frameDuration)
+          : null;
         const seeked = waitForEvent(this.video, "seeked");
         this.video.currentTime = targetTime;
         await seeked;
+        if (presented) await presented;
         didSeek = true;
       }
       if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
         await waitForEvent(this.video, "loadeddata");
       }
-      if (didSeek) await this._waitForPresentedFrame(targetTime, frameDuration);
+      if (didSeek && typeof this.video.requestVideoFrameCallback !== "function") {
+        await this._waitForPresentedFrame(targetTime, frameDuration);
+      }
     }
 
     _waitForPresentedFrame(targetTime, frameDuration) {
@@ -466,7 +475,7 @@
       return new Promise((resolve) => {
         let settled = false;
         let callbackId = 0;
-        const tolerance = Math.max(0.001, frameDuration * 0.6);
+        const tolerance = Math.max(0.001, frameDuration * 0.45);
         const finish = () => {
           if (settled) return;
           settled = true;
@@ -484,7 +493,7 @@
           }
           callbackId = this.video.requestVideoFrameCallback(checkFrame);
         };
-        const timeoutId = setTimeout(finish, 500);
+        const timeoutId = setTimeout(finish, 1200);
         callbackId = this.video.requestVideoFrameCallback(checkFrame);
       });
     }
