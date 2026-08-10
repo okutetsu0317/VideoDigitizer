@@ -1,21 +1,21 @@
-const CACHE_NAME = "video-digitizer-shell-v2.1.0";
+const CACHE_NAME = "video-digitizer-shell-v2.2.0";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./styles.css?v=2.1.0",
+  "./styles.css?v=2.2.0",
   "./frame-source.js",
   "./pwa.js",
-  "./ai-pose.js?v=2.1.0",
-  "./ai-pose-worker.js?v=2.1.0",
-  "./point-tracker.js?v=2.1.0",
-  "./point-tracker-worker.js?v=2.1.0",
-  "./app.js?v=2.1.0",
-  "./version.json?v=2.1.0",
-  "./manifest.webmanifest?v=2.1.0",
-  "./icon-192.png?v=2.1.0",
-  "./icon-512.png?v=2.1.0",
-  "./signin-google.png?v=2.1.0",
-  "./privacy.html?v=2.1.0",
+  "./ai-pose.js?v=2.2.0",
+  "./ai-pose-worker.js?v=2.2.0",
+  "./point-tracker.js?v=2.2.0",
+  "./point-tracker-worker.js?v=2.2.0",
+  "./app.js?v=2.2.0",
+  "./version.json?v=2.2.0",
+  "./manifest.webmanifest?v=2.2.0",
+  "./icon-192.png?v=2.2.0",
+  "./icon-512.png?v=2.2.0",
+  "./signin-google.png?v=2.2.0",
+  "./privacy.html?v=2.2.0",
 ];
 
 self.addEventListener("install", (event) => {

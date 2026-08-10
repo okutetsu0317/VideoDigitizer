@@ -83,7 +83,7 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.2.0";
 const AI_SUGGESTION_VERSION = 1;
 const HIGH_ACCURACY_AI_MODEL_ID = "google_deepmind_tapnextpp_512";
 const POSE_AI_MODEL = {
