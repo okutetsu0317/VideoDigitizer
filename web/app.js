@@ -1122,7 +1122,7 @@ function videoInfoRows() {
   return [
     ["動画名", state.videoName || "-"],
     ["解像度", state.videoWidth && state.videoHeight ? `${state.videoWidth} x ${state.videoHeight}` : "-"],
-    ["FPS", state.fps ? Number(state.fps).toFixed(3) : "-"],
+    ["平均FPS", state.fps ? Number(state.fps).toFixed(3) : "-"],
     ["フレーム数", state.frameCount ? `${state.frameCount}${state.frameCountEstimated ? "（推定）" : ""} / ID ${state.trimStart}-${state.trimEnd}` : "-"],
     ["時間", videoDurationText()],
     ["ファイルサイズ", formatBytes(identity.size)],
@@ -4255,6 +4255,8 @@ function canvasToSource(event) {
 function frameToTime(frame) {
   const stored = Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
   if (Number.isFinite(stored)) return stored;
+  const sourceTime = state.frameSource?.timeForFrame?.(frame);
+  if (Number.isFinite(sourceTime)) return sourceTime;
   return frame / Math.max(0.001, state.fps);
 }
 
@@ -7075,6 +7077,11 @@ function applyLoadedVideo(metadata, videoIdentity, pendingTrim) {
   els.frameImage.width = state.videoWidth;
   els.frameImage.height = state.videoHeight;
   els.fpsInput.value = String(Number(state.fps.toFixed(6)));
+  if (!Object.keys(state.frameTimestamps).length) {
+    els.timingStatus.textContent = metadata.timing_mode === "per_frame_container"
+      ? `時刻: 動画内の実フレーム時刻 ${state.frameCount}F`
+      : "時刻: 固定FPSとして計算";
+  }
   state.ready = true;
   seekFrame(state.frame);
 }

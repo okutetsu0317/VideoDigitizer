@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-perf2" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-perf2" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-perf2" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-perf2" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-perf3" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-perf3" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-perf3" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-perf3" />
   </head>
   <body>
     <main class="app">
@@ -56,7 +56,7 @@
           <details class="toolbar-menu">
             <summary>入力</summary>
             <div class="toolbar-popover control-grid">
-              <label class="field-block">FPS<input id="fpsInput" type="number" min="1" max="240" step="0.001" value="30" /></label>
+              <label class="field-block">平均FPS<input id="fpsInput" type="number" min="1" max="240" step="0.001" value="30" /></label>
               <label class="field-block">送り幅<input id="stepInput" type="number" min="1" step="1" value="1" /></label>
               <label class="field-block">打点後<select id="advanceMode"><option value="frame" selected>次フレーム</option><option value="marker-frame">次点→次フレーム</option><option value="marker">次点</option></select></label>
               <label class="field-block checkbox-field">自動送り<input id="autoAdvance" type="checkbox" checked /></label>
@@ -606,10 +606,10 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-perf2"></script>
-    <script src="./pwa.js?v=2.2.0-perf2"></script>
-    <script src="./ai-pose.js?v=2.2.0-perf2"></script>
-    <script src="./point-tracker.js?v=2.2.0-perf2"></script>
-    <script src="./app.js?v=2.2.0-perf2"></script>
+    <script src="./frame-source.js?v=2.2.0-perf3"></script>
+    <script src="./pwa.js?v=2.2.0-perf3"></script>
+    <script src="./ai-pose.js?v=2.2.0-perf3"></script>
+    <script src="./point-tracker.js?v=2.2.0-perf3"></script>
+    <script src="./app.js?v=2.2.0-perf3"></script>
   </body>
 </html>
