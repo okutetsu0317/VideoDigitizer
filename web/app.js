@@ -83,7 +83,7 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 const AI_SUGGESTION_VERSION = 1;
 const POSE_AI_MODEL = {
   id: "mediapipe_pose_landmarker_lite",
@@ -200,6 +200,7 @@ const els = {
   predictPoint: $("predictPoint"),
   trackNextPoint: $("trackNextPoint"),
   trackMarkerRange: $("trackMarkerRange"),
+  trackBetweenAnchors: $("trackBetweenAnchors"),
   runPoseAI: $("runPoseAI"),
   acceptAISuggestion: $("acceptAISuggestion"),
   acceptAIFrame: $("acceptAIFrame"),
@@ -1205,6 +1206,7 @@ function sourceTag(src, quality = {}) {
   if (src === "interp") return "I";
   if (src === "ai") return "A";
   if (src === "track") {
+    if (String(quality.note || "").startsWith("anchor_bidirectional")) return "TB";
     if (String(quality.note || "").startsWith("template")) return "T*";
     if (String(quality.note || "").startsWith("hold")) return "T!";
     return "T";
@@ -1912,6 +1914,161 @@ function trackedPointFlag(result) {
   return result.confidence < Math.max(0.7, result.threshold + 0.1)
     ? { status: "uncertain", updated_at: new Date().toISOString() }
     : null;
+}
+
+function findNextManualTrackingAnchor(marker, startFrame) {
+  for (let frame = startFrame + 1; frame <= state.trimEnd; frame += 1) {
+    const point = getPoint(frame, marker);
+    if (point?.src === "manual") return { frame, point };
+  }
+  return null;
+}
+
+function trackingFramesBetween(startFrame, endFrame) {
+  const frames = [startFrame];
+  const size = stepSize();
+  while (frames[frames.length - 1] < endFrame) {
+    frames.push(Math.min(endFrame, frames[frames.length - 1] + size));
+  }
+  return frames;
+}
+
+function anchorTrackingFatalReason(result) {
+  if (result.move > result.maxMove + 1e-6) return `移動量 ${result.move.toFixed(1)}px が上限を超えました`;
+  if (result.backward_error > 8) return `往復誤差 ${result.backward_error.toFixed(2)}px が大きすぎます`;
+  if (result.confidence < 0.2) return `信頼度 ${result.confidence.toFixed(2)} が低すぎます`;
+  return "";
+}
+
+function fuseAnchorTrackingPoint(forward, backward, index, lastIndex, startFrame, endFrame) {
+  const progress = index / lastIndex;
+  const forwardWeight = Math.max(0.05, 1 - progress) * Math.max(0.05, forward.confidence);
+  const backwardWeight = Math.max(0.05, progress) * Math.max(0.05, backward.confidence);
+  const weightTotal = forwardWeight + backwardWeight;
+  const disagreement = Math.hypot(forward.x - backward.x, forward.y - backward.y);
+  const tolerance = Math.max(2, currentTrackingOptions().patchRadius * 0.5);
+  const agreementConfidence = Math.exp(-disagreement / Math.max(1, tolerance));
+  const confidence = Math.max(0, Math.min(1,
+    Math.sqrt(forward.confidence * backward.confidence) * (0.55 + 0.45 * agreementConfidence),
+  ));
+  return trackPointFrom({
+    x: (forward.x * forwardWeight + backward.x * backwardWeight) / weightTotal,
+    y: (forward.y * forwardWeight + backward.y * backwardWeight) / weightTotal,
+    quality: {
+      confidence,
+      note: "anchor_bidirectional_zncc",
+      track_score: Math.min(forward.score, backward.score),
+      track_error: Math.max(forward.backward_error, backward.backward_error),
+      track_disagreement: disagreement,
+      forward_confidence: forward.confidence,
+      backward_confidence: backward.confidence,
+      start_anchor_frame: startFrame,
+      end_anchor_frame: endFrame,
+      method: "anchor_bidirectional_zncc_v1",
+    },
+  }, "anchor_bidirectional_zncc", confidence);
+}
+
+async function trackActiveMarkerBetweenManualAnchors() {
+  if (!state.ready || state.seeking) {
+    setStatus(state.seeking ? "フレーム移動が終わってから追跡してください" : "先に動画を開いてください");
+    return;
+  }
+  const marker = state.activeMarker;
+  const startFrame = state.frame;
+  const startPoint = getPoint(startFrame, marker);
+  if (startPoint?.src !== "manual") {
+    setStatus(`${startFrame}F の ${marker} に手入力点が必要です`);
+    return;
+  }
+  const endAnchor = findNextManualTrackingAnchor(marker, startFrame);
+  if (!endAnchor) {
+    setStatus(`${marker} の後方に手入力点がありません`);
+    return;
+  }
+  const frames = trackingFramesBetween(startFrame, endAnchor.frame);
+  if (frames.length <= 2) {
+    setStatus("2つの手入力点の間に追跡対象フレームがありません");
+    return;
+  }
+  const job = beginBackgroundJob(`${marker} を両方向追跡`);
+  if (!job) {
+    setStatus("別の処理が実行中です");
+    return;
+  }
+
+  const forward = new Map([[startFrame, { x: startPoint.x, y: startPoint.y, confidence: 1 }]]);
+  const backward = new Map([[endAnchor.frame, { x: endAnchor.point.x, y: endAnchor.point.y, confidence: 1 }]]);
+  let failure = "";
+  try {
+    let point = startPoint;
+    for (let index = 1; index < frames.length && !job.cancelled; index += 1) {
+      els.jobStatus.textContent = `処理: 順方向 ${index}/${frames.length - 1}`;
+      const result = await trackPointBetweenFrames(frames[index - 1], frames[index], point);
+      failure = anchorTrackingFatalReason(result);
+      if (failure) break;
+      forward.set(frames[index], result);
+      point = result;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+
+    point = endAnchor.point;
+    for (let index = frames.length - 2; index >= 0 && !job.cancelled && !failure; index -= 1) {
+      els.jobStatus.textContent = `処理: 逆方向 ${frames.length - 1 - index}/${frames.length - 1}`;
+      const result = await trackPointBetweenFrames(frames[index + 1], frames[index], point);
+      failure = anchorTrackingFatalReason(result);
+      if (failure) break;
+      backward.set(frames[index], result);
+      point = result;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+
+    if (job.cancelled || failure) {
+      finishBackgroundJob(job, job.cancelled ? "両方向追跡を中止しました" : `両方向追跡を採用しませんでした: ${failure}`);
+      return;
+    }
+
+    const entries = [];
+    let uncertainCount = 0;
+    const options = currentTrackingOptions();
+    for (let index = 1; index < frames.length - 1; index += 1) {
+      const frame = frames[index];
+      if (getPoint(frame, marker)) continue;
+      const tracked = fuseAnchorTrackingPoint(
+        forward.get(frame), backward.get(frame), index, frames.length - 1, startFrame, endAnchor.frame,
+      );
+      const disagreement = tracked.quality.track_disagreement;
+      const uncertain = disagreement > Math.max(3, options.patchRadius * 0.75)
+        || tracked.quality.confidence < Math.max(0.7, options.confidence + 0.1);
+      if (uncertain) uncertainCount += 1;
+      entries.push({
+        frame,
+        marker,
+        point: tracked,
+        flag: uncertain ? { status: "uncertain", updated_at: new Date().toISOString() } : null,
+      });
+    }
+    if (!entries.length) {
+      finishBackgroundJob(job, "手入力点の間は既に入力済みです");
+      return;
+    }
+    setPointsBatch(entries);
+    recordAudit("track_between_manual_anchors", {
+      marker,
+      start_frame: startFrame,
+      end_frame: endAnchor.frame,
+      count: entries.length,
+      uncertain_count: uncertainCount,
+      method: "anchor_bidirectional_zncc_v1",
+    });
+    const targetFrame = entries[0].frame;
+    state.selected = { frame: targetFrame, marker };
+    seekFrame(targetFrame);
+    renderAll();
+    finishBackgroundJob(job, `${marker} を ${startFrame}F-${endAnchor.frame}F で両方向追跡しました / 要確認 ${uncertainCount}点`);
+  } catch (error) {
+    finishBackgroundJob(job, `両方向追跡に失敗しました: ${error.message}`);
+  }
 }
 
 async function trackActivePointToNextFrame() {
@@ -4232,7 +4389,7 @@ function exportCsv() {
   for (const marker of state.markers) {
     headers.push(
       `${marker}_x`, `${marker}_y`, `${marker}_src`, `${marker}_quality_note`, `${marker}_confidence`,
-      `${marker}_track_score`, `${marker}_track_error`, `${marker}_status`, `${marker}_analysis_x`, `${marker}_analysis_y`,
+      `${marker}_track_score`, `${marker}_track_error`, `${marker}_track_disagreement`, `${marker}_status`, `${marker}_analysis_x`, `${marker}_analysis_y`,
     );
     if (transform) headers.push(`${marker}_real_x`, `${marker}_real_y`);
   }
@@ -4251,6 +4408,7 @@ function exportCsv() {
         Number.isFinite(Number(p?.quality?.confidence)) ? Number(p.quality.confidence).toFixed(4) : "",
         Number.isFinite(Number(p?.quality?.track_score)) ? Number(p.quality.track_score).toFixed(6) : "",
         Number.isFinite(Number(p?.quality?.track_error)) ? Number(p.quality.track_error).toFixed(4) : "",
+        Number.isFinite(Number(p?.quality?.track_disagreement)) ? Number(p.quality.track_disagreement).toFixed(4) : "",
         pointStatusAt(frame, marker), analysisPoint ? formatCoord(analysisPoint.x) : "", analysisPoint ? formatCoord(analysisPoint.y) : "",
       );
       if (transform) {
@@ -6028,6 +6186,7 @@ els.copyPrevFrame.addEventListener("click", copyPreviousFramePoints);
 els.predictPoint.addEventListener("click", predictCurrentPointFromPreviousFrames);
 els.trackNextPoint.addEventListener("click", trackActivePointToNextFrame);
 els.trackMarkerRange.addEventListener("click", trackActiveMarkerToRangeEnd);
+els.trackBetweenAnchors.addEventListener("click", trackActiveMarkerBetweenManualAnchors);
 els.runPoseAI.addEventListener("click", runPoseAIForCurrentFrame);
 els.acceptAISuggestion.addEventListener("click", acceptCurrentAISuggestion);
 els.acceptAIFrame.addEventListener("click", acceptCurrentFrameAISuggestions);

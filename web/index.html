@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=1.7.0" />
-    <link rel="icon" href="./icon-192.png?v=1.7.0" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=1.7.0" />
-    <link rel="stylesheet" href="./styles.css?v=1.7.0" />
+    <link rel="manifest" href="./manifest.webmanifest?v=1.8.0" />
+    <link rel="icon" href="./icon-192.png?v=1.8.0" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=1.8.0" />
+    <link rel="stylesheet" href="./styles.css?v=1.8.0" />
   </head>
   <body>
     <main class="app">
@@ -261,6 +261,7 @@
             <button id="predictPoint" type="button">前10F線形予測</button>
             <button id="trackNextPoint" type="button">次F画像追跡</button>
             <button id="trackMarkerRange" type="button">範囲を画像追跡</button>
+            <button id="trackBetweenAnchors" type="button" class="wide-control">次の手入力点まで両方向追跡</button>
             <div class="ai-actions wide-control">
               <button id="runPoseAI" type="button">AI姿勢候補</button>
               <button id="acceptAISuggestion" type="button">候補を採用</button>
@@ -615,8 +616,8 @@
     </main>
     <script src="./frame-source.js"></script>
     <script src="./pwa.js"></script>
-    <script src="./ai-pose.js?v=1.7.0"></script>
-    <script src="./point-tracker.js?v=1.7.0"></script>
-    <script src="./app.js?v=1.7.0"></script>
+    <script src="./ai-pose.js?v=1.8.0"></script>
+    <script src="./point-tracker.js?v=1.8.0"></script>
+    <script src="./app.js?v=1.8.0"></script>
   </body>
 </html>

@@ -26,6 +26,7 @@ Web版では、選択した動画をGitHubや外部サーバーへアップロ�
 - 元動画解像度基準のフレーム単位デジタイズ
 - 端末内AIによる姿勢候補と、採用・却下・信頼度記録
 - 任意点を前後往復誤差つきで追う軽量画像トラッキング
+- 2つの手入力点からドリフトを抑える両方向アンカー追跡
 - 編集可能な標準23点の初期マーカー構成
 - 軌跡、骨格線、カーソル位置ズーム
 - Excelライクな座標表のコピー・貼り付け
@@ -55,3 +56,4 @@ VideoDigitizerは研究作業を補助するツールです。解析前に、動
 - [第三者ソフトウェア](docs/THIRD_PARTY_NOTICES.md)
 - [独立開発方針](docs/independent_development_ja.md)
 - [技術実装の来歴](docs/technical_provenance_ja.md)
+- [AI追跡の採用方針](docs/ai_tracking_ja.md)
