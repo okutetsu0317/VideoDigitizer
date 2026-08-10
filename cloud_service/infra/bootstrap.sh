@@ -114,7 +114,7 @@ gcloud run deploy "${SERVICE_NAME}" \
   --min-instances 0 \
   --max-instances 2 \
   --timeout 360 \
-  --set-env-vars "SYNC_BUCKET=${BUCKET_NAME},BIGQUERY_POINTS_TABLE=${PROJECT_ID}.${DATASET_NAME}.${TABLE_NAME},GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}" \
+  --set-env-vars "GCP_PROJECT_ID=${PROJECT_ID},SYNC_BUCKET=${BUCKET_NAME},BIGQUERY_POINTS_TABLE=${PROJECT_ID}.${DATASET_NAME}.${TABLE_NAME},GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}" \
   --set-secrets "USER_HASH_KEY=${SECRET_NAME}:latest"
 
 SERVICE_URL="$(gcloud run services describe "${SERVICE_NAME}" --region "${REGION}" --project "${PROJECT_ID}" --format='value(status.url)')"

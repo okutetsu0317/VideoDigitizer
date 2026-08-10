@@ -25,7 +25,7 @@ from cloud_service.contracts import (
 )
 
 
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+PROJECT_ID = os.environ.get("GCP_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
 BUCKET_NAME = os.environ.get("SYNC_BUCKET", "")
 BIGQUERY_TABLE = os.environ.get("BIGQUERY_POINTS_TABLE", "")
 GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
