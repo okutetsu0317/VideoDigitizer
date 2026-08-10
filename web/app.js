@@ -343,6 +343,8 @@ const state = {
   fps: 30,
   frame: 0,
   frameCount: 0,
+  frameCountEstimated: false,
+  frameCountMethod: "",
   trailLength: 30,
   trimStart: 0,
   trimEnd: 0,
@@ -1058,7 +1060,8 @@ function updateStatus() {
   normalizeTrim();
   els.videoName.textContent = state.videoName || "未選択";
   els.dirtyMark.textContent = state.dirty ? " *" : "";
-  els.frameInfo.textContent = `フレーム ${state.frame} / ${Math.max(0, state.frameCount - 1)}  範囲 ${state.trimStart}-${state.trimEnd}`;
+  const countLabel = state.frameCountEstimated ? `全${state.frameCount}・推定` : `全${state.frameCount}`;
+  els.frameInfo.textContent = `フレームID ${state.frame} / ${Math.max(0, state.frameCount - 1)}（${countLabel}） 範囲ID ${state.trimStart}-${state.trimEnd}`;
   const calibrationText = hasCalibrationPoints() ? "4点法 4/4" : `4点法 ${calibrationPointCount()}/4`;
   els.markerInfo.textContent = `マーカー ${state.activeMarker} / ${calibrationText}`;
   if (els.calibStatus) {
@@ -1120,7 +1123,7 @@ function videoInfoRows() {
     ["動画名", state.videoName || "-"],
     ["解像度", state.videoWidth && state.videoHeight ? `${state.videoWidth} x ${state.videoHeight}` : "-"],
     ["FPS", state.fps ? Number(state.fps).toFixed(3) : "-"],
-    ["フレーム数", state.frameCount ? `${state.frameCount} (${state.trimStart}-${state.trimEnd})` : "-"],
+    ["フレーム数", state.frameCount ? `${state.frameCount}${state.frameCountEstimated ? "（推定）" : ""} / ID ${state.trimStart}-${state.trimEnd}` : "-"],
     ["時間", videoDurationText()],
     ["ファイルサイズ", formatBytes(identity.size)],
     ["コーデック", identity.codec || "-"],
@@ -5791,6 +5794,8 @@ function digitizeSnapshot() {
       name: state.videoName,
       fps: state.fps,
       frame_count: state.frameCount,
+      frame_count_estimated: state.frameCountEstimated,
+      frame_count_method: state.frameCountMethod,
       width: state.videoWidth,
       height: state.videoHeight,
       identity: state.videoIdentity,
@@ -7038,6 +7043,8 @@ function resetVideoForLoad() {
   state.frame = 0;
   state.analysisFrame = 0;
   state.frameCount = 0;
+  state.frameCountEstimated = false;
+  state.frameCountMethod = "";
   state.trimStart = 0;
   state.trimEnd = 0;
   state.videoWidth = 0;
@@ -7055,6 +7062,8 @@ function applyLoadedVideo(metadata, videoIdentity, pendingTrim) {
   state.videoName = String(metadata.name || videoIdentity.name || "video");
   state.fps = Number(metadata.fps) || state.fps;
   state.frameCount = Math.max(1, Number(metadata.frame_count) || 1);
+  state.frameCountEstimated = Boolean(metadata.frame_count_estimated);
+  state.frameCountMethod = String(metadata.frame_count_method || (usesBrowserFrameSource() ? "duration_fps_estimate" : "decoder"));
   state.trimStart = pendingTrim ? pendingTrim.start : 0;
   state.trimEnd = pendingTrim ? pendingTrim.end : maxFrameIndex();
   state.frame = pendingTrim ? pendingTrim.frame : 0;
