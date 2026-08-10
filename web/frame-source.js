@@ -282,6 +282,7 @@
       this.fps = this.exactFrameCount > 0 && this.duration > 0
         ? this.exactFrameCount / this.duration
         : Math.max(0.001, Number(fps) || 30);
+      this.presentedFrame = null;
       this.closed = false;
       this.queue = Promise.resolve();
     }
@@ -309,6 +310,7 @@
         canvas.height = video.videoHeight;
         const source = new BrowserFrameSource(file, objectUrl, video, canvas, fps, await timingPromise);
         await source.detectFps();
+        await source._resetToFirstFrame();
         return {
           source,
           metadata: source.metadata(file.name),
@@ -437,8 +439,115 @@
       return this.queue;
     }
 
+    frameForMediaTime(mediaTime) {
+      const value = Number(mediaTime);
+      if (!Number.isFinite(value)) return this.presentedFrame;
+      if (!this.frameTimes?.length) {
+        return Math.max(0, Math.min(this.frameCount() - 1, Math.round(value * this.fps)));
+      }
+      let low = 0;
+      let high = this.frameTimes.length - 1;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (this.frameTimes[middle] < value) low = middle + 1;
+        else high = middle;
+      }
+      if (low > 0 && Math.abs(this.frameTimes[low - 1] - value) <= Math.abs(this.frameTimes[low] - value)) {
+        return low - 1;
+      }
+      return low;
+    }
+
+    async _resetToFirstFrame() {
+      if (this.closed) throw new Error("動画は閉じられています");
+      this.video.pause();
+      if (Math.abs(this.video.currentTime) > 0.0001) {
+        const seeked = waitForEvent(this.video, "seeked");
+        this.video.currentTime = 0;
+        await seeked;
+      }
+      if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        await waitForEvent(this.video, "loadeddata");
+      }
+      if (typeof this.video.requestVideoFrameCallback !== "function") {
+        this.presentedFrame = 0;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        return;
+      }
+
+      const metadata = await this._playUntilNextPresentation();
+      this.presentedFrame = this.frameForMediaTime(metadata?.mediaTime);
+      if (!Number.isFinite(this.presentedFrame) || this.presentedFrame > 1) this.presentedFrame = 0;
+    }
+
+    _playUntilNextPresentation() {
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let callbackId = 0;
+        const finish = (error, metadata) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          this.video.pause();
+          if (callbackId && this.video.cancelVideoFrameCallback) {
+            this.video.cancelVideoFrameCallback(callbackId);
+          }
+          if (error) reject(error);
+          else resolve(metadata);
+        };
+        const timeoutId = setTimeout(() => finish(new Error("次の動画フレームを表示できませんでした")), 2000);
+        callbackId = this.video.requestVideoFrameCallback((_now, metadata) => finish(null, metadata));
+        this.video.play().catch((error) => finish(error));
+      });
+    }
+
+    _playToFrame(targetFrame) {
+      const target = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(targetFrame) || 0)));
+      if (this.presentedFrame === target) return Promise.resolve();
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let callbackId = 0;
+        const startFrame = Math.max(0, Number(this.presentedFrame) || 0);
+        const expectedMs = ((target - startFrame + 2) / Math.max(1, this.fps)) * 1000;
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          this.video.pause();
+          if (callbackId && this.video.cancelVideoFrameCallback) {
+            this.video.cancelVideoFrameCallback(callbackId);
+          }
+          if (error) reject(error);
+          else resolve();
+        };
+        const onFrame = (_now, metadata) => {
+          const frame = this.frameForMediaTime(metadata?.mediaTime);
+          if (Number.isFinite(frame) && frame > this.presentedFrame) this.presentedFrame = frame;
+          if (this.presentedFrame >= target) {
+            finish();
+            return;
+          }
+          callbackId = this.video.requestVideoFrameCallback(onFrame);
+        };
+        const timeoutId = setTimeout(
+          () => finish(new Error(`フレームID ${target} まで連続デコードできませんでした`)),
+          Math.max(2000, expectedMs * 3),
+        );
+        callbackId = this.video.requestVideoFrameCallback(onFrame);
+        this.video.playbackRate = 1;
+        this.video.play().catch((error) => finish(error));
+      });
+    }
+
     async _seekToFrame(frame, timeSec) {
       if (this.closed) throw new Error("動画は閉じられています");
+      const targetFrame = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(frame) || 0)));
+      if (this.frameTimes?.length && Number.isFinite(this.presentedFrame)) {
+        if (targetFrame === this.presentedFrame) return;
+        if (targetFrame < this.presentedFrame) await this._resetToFirstFrame();
+        if (targetFrame > this.presentedFrame) await this._playToFrame(targetFrame);
+        return;
+      }
       const frameDuration = 1 / this.fps;
       const hasExplicitTime = Number.isFinite(Number(timeSec));
       const requestedTime = hasExplicitTime ? Number(timeSec) : this.timeForFrame(frame);
