@@ -8,6 +8,8 @@
 
 Web版では、選択した動画をGitHubや外部サーバーへアップロードせず、ブラウザ内でフレームを処理します。MP4/H.264を推奨します。プロジェクトはブラウザのIndexedDBにも自動保存されますが、重要な作業は `プロジェクト保存` でファイルとして残してください。GoogleログインはMacアプリ版専用で、Web版では利用しません。
 
+開発中の次期Macアプリ版では、最後に選択した動画への参照をアカウント別にMac内へ保存し、元のファイルが変更されていなければ次回起動時に再接続します。動画本体は複製もクラウド送信もしません。
+
 ## macOS版をダウンロード
 
 [最新版のVideoDigitizerをダウンロード](https://github.com/okutetsu0317/VideoDigitizer/releases/latest/download/VideoDigitizer-macos-arm64.dmg)

@@ -5831,6 +5831,45 @@ function autosaveJsonText() {
   return JSON.stringify(autosavePayload());
 }
 
+function cloudDigitizePayload() {
+  normalizeTrim();
+  readCalibrationSettings();
+  readCoordinateSystem();
+  const identity = state.videoIdentity || {};
+  return {
+    schema: "video_digitizer_cloud_data_v1",
+    version: 1,
+    saved_at: new Date().toISOString(),
+    source_signature: {
+      digest_algorithm: String(identity.digest_algorithm || ""),
+      digest: String(identity.digest || ""),
+      fps: state.fps,
+      frame_count: state.frameCount,
+      width: state.videoWidth,
+      height: state.videoHeight,
+    },
+    frame_range: { start: state.trimStart, end: state.trimEnd },
+    markers: [...state.markers],
+    skeleton_segments: state.skeletonSegments.map((segment) => [...segment]),
+    tracking_constraints: structuredClone(state.trackingConstraints),
+    calibration: {
+      method: "four_point",
+      points: structuredClone(state.calibration.points),
+      real_points: structuredClone(state.calibration.realPoints),
+      unit: state.calibration.unit,
+      enabled: state.calibration.enabled,
+      lens: structuredClone(state.lens),
+    },
+    timing: {
+      mode: Object.keys(state.frameTimestamps).length ? "per_frame" : "constant_fps",
+      frame_timestamps: structuredClone(state.frameTimestamps),
+    },
+    coordinate_system: structuredClone(state.coordinateSystem),
+    points: structuredClone(state.points),
+    point_flags: structuredClone(state.pointFlags),
+  };
+}
+
 function saveProjectPackage() {
   const payload = projectPayload();
   payload.package = {
@@ -6765,6 +6804,40 @@ async function setVideoSourceFromNativePicker() {
   setStatus("動画を開きました");
 }
 
+async function restoreRecentLocalVideo() {
+  if (state.sourceMode !== "api" || !state.account.authenticated || state.ready) return;
+  let response;
+  try {
+    response = await fetch(localApiUrl("recent-video"), { cache: "no-store" });
+  } catch (_error) {
+    return;
+  }
+  if (response.status === 401 || response.status === 404) return;
+  if (!response.ok) {
+    setStatus("前回の動画を再接続できませんでした。動画を選び直してください");
+    return;
+  }
+
+  const metadata = await response.json();
+  const identity = metadata.identity || {};
+  const videoIdentity = {
+    name: String(identity.name || metadata.name || ""),
+    size: Number(identity.size) || 0,
+    last_modified: Number(identity.last_modified) || 0,
+    digest_algorithm: String(identity.digest_algorithm || ""),
+    digest: String(identity.digest || ""),
+    fps: Number(identity.fps ?? metadata.fps) || 0,
+    frame_count: Number(identity.frame_count ?? metadata.frame_count) || 0,
+    width: Number(identity.width ?? metadata.width) || 0,
+    height: Number(identity.height ?? metadata.height) || 0,
+    codec: String(identity.codec || metadata.codec || ""),
+  };
+  const { pendingTrim } = resetVideoForLoad();
+  state.frameSource = new VideoDigitizerFrames.ApiFrameSource((frame) => frameUrl(frame));
+  applyLoadedVideo(metadata, videoIdentity, pendingTrim);
+  setStatus("前回の動画をこのMacから再読込しました");
+}
+
 function openVideoWithFallback() {
   if (usesBrowserFrameSource()) {
     els.videoFile.click();
@@ -7213,4 +7286,4 @@ try {
 }
 renderAll();
 refreshAITrackingCapabilities();
-refreshAccountStatus();
+refreshAccountStatus().then(restoreRecentLocalVideo).catch(() => {});
