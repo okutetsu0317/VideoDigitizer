@@ -83,7 +83,7 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 const AI_SUGGESTION_VERSION = 1;
 const HIGH_ACCURACY_AI_MODEL_ID = "google_deepmind_tapnextpp_512";
 const POSE_AI_MODEL = {
@@ -308,6 +308,13 @@ const els = {
   checkUpdates: $("checkUpdates"),
   appVersion: $("appVersion"),
   appMode: $("appMode"),
+  accountMenu: $("accountMenu"),
+  accountSummary: $("accountSummary"),
+  accountStatus: $("accountStatus"),
+  googleSignIn: $("googleSignIn"),
+  googleSignOut: $("googleSignOut"),
+  restoreAccountCache: $("restoreAccountCache"),
+  deleteAccountCache: $("deleteAccountCache"),
 };
 for (const [, id] of METADATA_FIELDS) els[id] = $(id);
 for (let index = 1; index <= 4; index += 1) {
@@ -341,7 +348,7 @@ const state = {
   dirty: false,
   ready: false,
   frameSource: null,
-  sourceMode: new URLSearchParams(window.location.search).get("token") ? "api" : "browser",
+  sourceMode: new URLSearchParams(window.location.search).get("local") === "1" ? "api" : "browser",
   seeking: false,
   seekSerial: 0,
   frameCacheToken: 0,
@@ -351,7 +358,7 @@ const state = {
   videoHeight: 0,
   pendingTrim: null,
   sessionId: createSessionId(),
-  appToken: new URLSearchParams(window.location.search).get("token") || "",
+  appToken: "",
   pointRevision: 0,
   aiSuggestionRevision: 0,
   aiRuntimeStatus: "未実行",
@@ -378,6 +385,12 @@ const state = {
   },
   studyTrials: [],
   backgroundJob: null,
+  account: {
+    configured: false,
+    authenticated: false,
+    profile: null,
+    lastSavedAt: 0,
+  },
   trackingConstraints: {},
   skeletonSegments: SKELETON_SEGMENTS.map((segment) => segment.slice()),
   calibration: {
@@ -5855,25 +5868,168 @@ async function checkUpdates() {
   }
 }
 
+function localApiUrl(path) {
+  return `./api/${path}?${sessionQuery()}`;
+}
+
+function updateAccountUI() {
+  const account = state.account;
+  const localApp = state.sourceMode === "api";
+  els.accountMenu.hidden = !localApp;
+  const label = account.profile?.name || account.profile?.email || "Googleアカウント";
+  els.accountSummary.textContent = account.authenticated ? label : "ログイン";
+  els.googleSignIn.hidden = account.authenticated;
+  els.googleSignIn.disabled = !localApp || !account.configured;
+  els.googleSignOut.hidden = !account.authenticated;
+  els.googleSignOut.disabled = !account.authenticated;
+  els.restoreAccountCache.disabled = !account.authenticated;
+  els.deleteAccountCache.disabled = !account.authenticated;
+  if (!localApp) {
+    els.accountStatus.textContent = "Googleログインとアカウント別保存はMacアプリ版で利用できます。";
+  } else if (account.authenticated) {
+    const saved = account.lastSavedAt ? ` / 自動保存 ${new Date(account.lastSavedAt).toLocaleTimeString()}` : "";
+    els.accountStatus.textContent = `${label}でログイン中${saved}`;
+  } else if (!account.configured) {
+    els.accountStatus.textContent = "GoogleログインはOAuthクライアント設定後に利用できます。";
+  } else {
+    els.accountStatus.textContent = "ログインすると、このMac内の自動保存をアカウント別に分けられます。";
+  }
+}
+
+async function refreshAccountStatus() {
+  if (state.sourceMode !== "api") {
+    updateAccountUI();
+    return state.account;
+  }
+  try {
+    const response = await fetch(localApiUrl("auth/status"), { cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const status = await response.json();
+    state.account.configured = Boolean(status.configured);
+    state.account.authenticated = Boolean(status.authenticated);
+    state.account.profile = status.profile || null;
+  } catch (_error) {
+    state.account.configured = false;
+    state.account.authenticated = false;
+    state.account.profile = null;
+  }
+  updateAccountUI();
+  return state.account;
+}
+
+async function startGoogleSignIn() {
+  const authWindow = window.open("about:blank", "videodigitizer-google-login", "width=620,height=760");
+  try {
+    const response = await fetch(localApiUrl("auth/google/start"), { method: "POST", cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const payload = await response.json();
+    if (!authWindow) throw new Error("ログイン画面のポップアップがブロックされました");
+    authWindow.opener = null;
+    authWindow.location.replace(payload.authorization_url);
+    setStatus("Googleログインの完了を待っています");
+    const deadline = Date.now() + Math.min(10 * 60_000, Number(payload.expires_in || 600) * 1000);
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      await refreshAccountStatus();
+      if (state.account.authenticated) {
+        setStatus("Googleログインが完了しました");
+        return;
+      }
+    }
+    throw new Error("Googleログインが時間切れになりました");
+  } catch (error) {
+    authWindow?.close();
+    setStatus(`Googleログインを開始できませんでした: ${error.message}`);
+  }
+}
+
+async function signOutGoogle() {
+  try {
+    const response = await fetch(localApiUrl("auth/signout"), { method: "POST", cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    state.account.authenticated = false;
+    state.account.profile = null;
+    state.account.lastSavedAt = 0;
+    updateAccountUI();
+    setStatus("Googleアカウントからログアウトしました");
+  } catch (error) {
+    setStatus(`ログアウトできませんでした: ${error.message}`);
+  }
+}
+
+async function deleteAccountAutosave() {
+  if (!confirm("このGoogleアカウントに紐づく、このMac内の自動保存を削除しますか？")) return;
+  try {
+    const response = await fetch(localApiUrl("account-cache/delete"), { method: "POST", cache: "no-store" });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    state.account.lastSavedAt = 0;
+    updateAccountUI();
+    setStatus("アカウント別の自動保存を削除しました");
+  } catch (error) {
+    setStatus(`自動保存を削除できませんでした: ${error.message}`);
+  }
+}
+
+async function writeAccountAutosave(text) {
+  if (state.sourceMode !== "api" || !state.account.authenticated) return;
+  try {
+    const response = await fetch(localApiUrl("account-cache"), {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: text,
+    });
+    if (!response.ok) throw new Error(await apiErrorMessage(response));
+    const result = await response.json();
+    state.account.lastSavedAt = Number(result.saved_at || 0) * 1000;
+    updateAccountUI();
+  } catch (_error) {
+    // Browser IndexedDB remains the fallback if the account cache is unavailable.
+  }
+}
+
 function writeAutosave() {
   if (!state.dirty && !state.ready && Object.keys(state.points).length === 0) return;
   const text = projectJsonText();
-  try {
-    localStorage.setItem(AUTOSAVE_KEY, text);
-  } catch (_error) {
-    // Autosave is best-effort because browser storage may be full or disabled.
-  }
   globalThis.VideoDigitizerStorage?.set(AUTOSAVE_KEY, text).catch(() => {});
+  writeAccountAutosave(text);
 }
 
-async function restoreAutosave() {
+async function accountAutosaveText() {
+  if (state.sourceMode !== "api" || !state.account.authenticated) return null;
+  const response = await fetch(localApiUrl("account-cache"), { cache: "no-store" });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(await apiErrorMessage(response));
+  return response.text();
+}
+
+async function restoreAutosave(options = {}) {
   let raw = null;
-  try {
-    raw = await globalThis.VideoDigitizerStorage?.get(AUTOSAVE_KEY);
-  } catch (_error) {
-    raw = null;
+  if (!options.localOnly) {
+    try {
+      raw = await accountAutosaveText();
+    } catch (_error) {
+      raw = null;
+    }
   }
-  raw ||= localStorage.getItem(AUTOSAVE_KEY);
+  if (!raw && !options.accountOnly) {
+    try {
+      raw = await globalThis.VideoDigitizerStorage?.get(AUTOSAVE_KEY);
+    } catch (_error) {
+      // Continue to the one-time localStorage migration.
+    }
+  }
+  if (!raw && !options.accountOnly) {
+    try {
+      raw = localStorage.getItem(AUTOSAVE_KEY);
+      if (raw) {
+        globalThis.VideoDigitizerStorage?.set(AUTOSAVE_KEY, raw).catch(() => {});
+        localStorage.removeItem(AUTOSAVE_KEY);
+      }
+    } catch (_error) {
+      raw = null;
+    }
+  }
   if (!raw) {
     setStatus("復元できる自動保存がありません");
     return;
@@ -5881,6 +6037,10 @@ async function restoreAutosave() {
   if (!confirm("自動保存されたプロジェクトを読み込みますか？\n現在の未保存内容は上書きされます。")) return;
   const file = new File([raw], "autosave_project.json", { type: "application/json" });
   loadProject(file);
+}
+
+function restoreAccountAutosave() {
+  restoreAutosave({ accountOnly: true });
 }
 
 function defaultProjectFilename() {
@@ -6813,6 +6973,10 @@ els.saveWorkspacePreset.addEventListener("click", saveWorkspacePreset);
 els.loadWorkspacePreset.addEventListener("click", loadWorkspacePreset);
 els.downloadDiagnostics.addEventListener("click", downloadDiagnostics);
 els.checkUpdates.addEventListener("click", checkUpdates);
+els.googleSignIn.addEventListener("click", startGoogleSignIn);
+els.googleSignOut.addEventListener("click", signOutGoogle);
+els.restoreAccountCache.addEventListener("click", restoreAccountAutosave);
+els.deleteAccountCache.addEventListener("click", deleteAccountAutosave);
 for (const element of [
   els.workspaceSideWidth, els.workspaceDensity, els.shortcutPrev, els.shortcutNext, els.shortcutCopy, els.shortcutPredict,
 ]) {
@@ -7021,3 +7185,4 @@ try {
 }
 renderAll();
 refreshAITrackingCapabilities();
+refreshAccountStatus();

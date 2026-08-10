@@ -1,7 +1,7 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "channel": "stable",
   "manifest_version": 1,
-  "download_url": "https://github.com/okutetsu0317/VideoDigitizer/releases/download/v2.0.0/VideoDigitizer-macos-arm64.dmg",
-  "signature": "sha256:df86dec5ae041684a97b69257a7f3f1e19ffb40702ee735ebd41bcf9350effd2"
+  "download_url": "",
+  "signature": ""
 }

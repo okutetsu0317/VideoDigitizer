@@ -29,6 +29,11 @@ VideoDigitizerのmacOS配布物には、以下の第三者ソフトウェアが�
 
 VideoDigitizerは、上記プロジェクトからの公認、提携、保証を受けるものではありません。
 
+ログイン画面ではGoogleが配布する承認済みの「Sign in with Google」ボタン画像を、
+Google Identityのブランディングガイドラインに従って使用します。この画像はGoogleの
+商標資産であり、VideoDigitizerの名称、ロゴ、提携関係を示すものではありません。
+配布元: https://developers.google.com/identity/branding-guidelines
+
 macOS配布版は、GPL版FFmpeg、x264/x265、GNU Readlineを同梱しません。XZ Utilsからは0BSDの`liblzma`のみを同梱します。リリース工程で実行時設定、アプリ内バイナリ、外部参照、ライセンス原文を検査します。
 
 ライセンス通知と原文は、DMG内の文書に加え、`VideoDigitizer.app/Contents/Resources/legal` にも格納します。

@@ -18,7 +18,7 @@
     if (typeof Worker !== "function" || typeof createImageBitmap !== "function") {
       throw new Error("このブラウザはAI姿勢推定に対応していません");
     }
-    worker = new Worker(new URL("./ai-pose-worker.js?v=2.0.0", document.baseURI), { type: "module" });
+    worker = new Worker(new URL("./ai-pose-worker.js?v=2.1.0", document.baseURI), { type: "module" });
     worker.addEventListener("message", (event) => {
       const request = pending.get(event.data?.id);
       if (!request) return;

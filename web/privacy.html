@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
+    <title>VideoDigitizer プライバシーポリシー</title>
+    <style>
+      body { margin: 0; color: #1c2430; background: #f5f6f7; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; line-height: 1.75; }
+      main { width: min(760px, calc(100% - 32px)); margin: 32px auto; padding: 28px; border: 1px solid #d6dbe1; border-radius: 8px; background: #fff; }
+      h1 { margin-top: 0; font-size: 24px; }
+      h2 { margin-top: 28px; font-size: 17px; }
+      ul { padding-left: 22px; }
+      .date { color: #687386; font-size: 13px; }
+      @media (max-width: 600px) { main { margin: 0; width: 100%; min-height: 100vh; padding: 20px; border: 0; border-radius: 0; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>VideoDigitizer プライバシーポリシー</h1>
+      <p class="date">最終更新日: 2026年8月10日</p>
+
+      <h2>処理する情報</h2>
+      <p>Googleログインを利用した場合、VideoDigitizerはGoogleからアカウント固有ID、表示名、メールアドレス、メール確認状態を受け取ります。ログインを利用しない場合、これらの情報は取得しません。</p>
+
+      <h2>利用目的</h2>
+      <p>Googleアカウント情報は、このMac内の自動保存データを利用者ごとに分け、同じ利用者が作業を再開できるようにする目的だけで利用します。広告、利用者追跡、第三者への販売、AIモデルの学習には利用しません。</p>
+
+      <h2>動画・座標データ</h2>
+      <p>Macアプリ版では動画の復号、座標入力、AI推論を端末内で実行します。Googleログインを有効にしても、動画、デジタイズ座標、研究メタデータをGoogleへ送信しません。現在のアカウント保存は端末内保存であり、別端末とのクラウド同期ではありません。</p>
+
+      <h2>保存と保護</h2>
+      <ul>
+        <li>OAuthアクセストークンはメモリ上だけで扱い、永続保存しません。</li>
+        <li>再ログイン用refresh tokenはmacOSキーチェーンへ保存します。</li>
+        <li>アカウント別自動保存は、Googleのアカウント固有IDをハッシュした端末内ディレクトリへ、所有者だけが読み書きできる権限で保存します。</li>
+        <li>ブラウザ版の自動保存は、そのブラウザのIndexedDBへ保存されます。</li>
+      </ul>
+
+      <h2>削除</h2>
+      <p>アプリ内でログアウトすると、保存したGoogle OAuthセッションを失効させ、キーチェーンから削除します。自動保存した研究データは誤削除防止のためログアウト後も端末内に残ります。ログイン中に「自動保存を削除」を実行すると、そのアカウントの端末内キャッシュを削除できます。</p>
+
+      <h2>Google API</h2>
+      <p>Google APIから受け取った情報の利用は、Google API Services User Data Policyを含む適用条件に従います。現時点ではGoogle Drive、Gmail、Google CalendarなどのGoogle Workspaceデータへの権限を要求しません。</p>
+
+      <h2>問い合わせ</h2>
+      <p>プライバシーに関する問い合わせは、VideoDigitizerの公開GitHubリポジトリのIssueから受け付けます。</p>
+    </main>
+  </body>
+</html>
