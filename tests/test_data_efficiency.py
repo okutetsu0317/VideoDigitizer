@@ -145,6 +145,23 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertIn('"playback_time_sec"', app)
         self.assertIn('"capture_fps_confirmed"', app)
 
+    def test_display_precision_does_not_round_canonical_coordinates(self):
+        app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
+        html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
+
+        normalize_start = app.index("function normalizeCoordinate")
+        normalize_end = app.index("\nfunction formatCoord", normalize_start)
+        normalize_body = app[normalize_start:normalize_end]
+        records_start = app.index("function digitizeCoordinates")
+        records_end = app.index("\nfunction digitizeSnapshot", records_start)
+
+        self.assertIn("return Math.max(0, Math.min(max, numeric));", normalize_body)
+        self.assertNotIn("Math.round", normalize_body)
+        self.assertIn("x: Number(point.x)", app[records_start:records_end])
+        self.assertIn("y: Number(point.y)", app[records_start:records_end])
+        self.assertIn('id="coordDecimals" type="number" min="0" max="6"', html)
+        self.assertIn("表示・CSV桁", html)
+
     def test_analysis_aggregate_runs_in_a_lazy_worker_and_rejects_stale_results(self):
         app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
         worker = ROOT / "web_viewer" / "analysis-aggregate-worker.js"
@@ -207,8 +224,8 @@ class DataEfficiencyTests(unittest.TestCase):
         html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
         worker = (ROOT / "web_viewer" / "service-worker.js").read_text(encoding="utf-8")
 
-        self.assertIn("2.2.0-integrity1", html)
-        self.assertIn("2.2.0-integrity1", worker)
+        self.assertIn("2.2.0-integrity2", html)
+        self.assertIn("2.2.0-integrity2", worker)
 
     def test_pwa_updates_without_losing_active_unsaved_work(self):
         pwa = (ROOT / "web_viewer" / "pwa.js").read_text(encoding="utf-8")

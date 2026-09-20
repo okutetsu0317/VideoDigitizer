@@ -882,7 +882,7 @@ function stepSize() {
 }
 
 function coordinateDecimals() {
-  return Math.max(0, Math.min(3, Math.round(Number(els.coordDecimals.value) || 0)));
+  return Math.max(0, Math.min(6, Math.round(Number(els.coordDecimals.value) || 0)));
 }
 
 function coordinateScale() {
@@ -892,9 +892,7 @@ function coordinateScale() {
 function normalizeCoordinate(value, max) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
-  const clamped = Math.max(0, Math.min(max, numeric));
-  const scale = coordinateScale();
-  return Math.round(clamped * scale) / scale;
+  return Math.max(0, Math.min(max, numeric));
 }
 
 function formatCoord(value) {
@@ -4025,7 +4023,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity1", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity2", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -6429,8 +6427,8 @@ function digitizeCoordinates(transform = null) {
         time_basis: analysisTimeBasisInfo().id,
         playback_time_sec: Number(videoPlaybackTime(frame).toFixed(6)),
         marker,
-        x: Number(formatCoord(point.x)),
-        y: Number(formatCoord(point.y)),
+        x: Number(point.x),
+        y: Number(point.y),
         src: point.src || "",
         quality_note: point.quality?.note || "",
         quality: point.quality || {},
@@ -7426,8 +7424,8 @@ function normalizeCalibrationPoints(points, fileName = "") {
     seen.add(key);
     normalized.push({
       label: String(item.label || item.marker || `calib_p${normalized.length + 1}`),
-      x: Math.round(x * coordinateScale()) / coordinateScale(),
-      y: Math.round(y * coordinateScale()) / coordinateScale(),
+      x,
+      y,
       frame: Number.isFinite(Number(item.frame)) ? Math.round(Number(item.frame)) : null,
       source_file: fileName,
     });
@@ -7759,7 +7757,7 @@ function loadProject(file) {
         els.autoAdvance.checked = payload.ui_settings.auto_advance !== false;
         els.advanceMode.value = payload.ui_settings.advance_mode || "frame";
         els.stepInput.value = String(Math.max(1, Math.round(Number(payload.ui_settings.step) || 1)));
-        els.coordDecimals.value = String(Math.max(0, Math.min(3, Math.round(Number(payload.ui_settings.coordinate_decimals ?? digitize.coordinate_decimals ?? 1)))));
+        els.coordDecimals.value = String(Math.max(0, Math.min(6, Math.round(Number(payload.ui_settings.coordinate_decimals ?? digitize.coordinate_decimals ?? 1)))));
         els.zoomEnabled.checked = payload.ui_settings.zoom_enabled !== false;
         els.zoomScale.value = String(Math.max(2, Math.min(8, Number(payload.ui_settings.zoom_scale) || 4)));
         els.zoomLensSize.value = String(Math.max(120, Math.min(360, Math.round(Number(payload.ui_settings.zoom_lens_size) || 220))));

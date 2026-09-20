@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-integrity1" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-integrity1" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-integrity1" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-integrity1" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-integrity2" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-integrity2" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-integrity2" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-integrity2" />
     <script src="./native-bridge.js?v=2.2.0-ios1"></script>
   </head>
   <body>
@@ -67,7 +67,7 @@
               <label class="field-block">送り幅<input id="stepInput" type="number" min="1" step="1" value="1" /></label>
               <label class="field-block">打点後<select id="advanceMode"><option value="frame" selected>次フレーム</option><option value="marker-frame">次点→次フレーム</option><option value="marker">次点</option></select></label>
               <label class="field-block checkbox-field">自動送り<input id="autoAdvance" type="checkbox" checked /></label>
-              <label class="field-block">座標桁<input id="coordDecimals" type="number" min="0" max="3" step="1" value="1" /></label>
+              <label class="field-block">表示・CSV桁<input id="coordDecimals" type="number" min="0" max="6" step="1" value="1" /></label>
               <label class="field-block">開始<input id="trimStartInput" type="number" min="0" step="1" value="0" /></label>
               <button id="setTrimStart" type="button">現在を開始</button>
               <label class="field-block">終了<input id="trimEndInput" type="number" min="0" step="1" value="0" /></label>
@@ -903,12 +903,12 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-integrity1"></script>
-    <script src="./pwa.js?v=2.2.0-integrity1"></script>
-    <script src="./ai-pose.js?v=2.2.0-integrity1"></script>
-    <script src="./point-tracker.js?v=2.2.0-integrity1"></script>
-    <script src="./step-analysis-core.js?v=2.2.0-integrity1"></script>
-    <script src="./step-analysis.js?v=2.2.0-integrity1"></script>
-    <script src="./app.js?v=2.2.0-integrity1"></script>
+    <script src="./frame-source.js?v=2.2.0-integrity2"></script>
+    <script src="./pwa.js?v=2.2.0-integrity2"></script>
+    <script src="./ai-pose.js?v=2.2.0-integrity2"></script>
+    <script src="./point-tracker.js?v=2.2.0-integrity2"></script>
+    <script src="./step-analysis-core.js?v=2.2.0-integrity2"></script>
+    <script src="./step-analysis.js?v=2.2.0-integrity2"></script>
+    <script src="./app.js?v=2.2.0-integrity2"></script>
   </body>
 </html>
