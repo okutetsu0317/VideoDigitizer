@@ -138,7 +138,7 @@ class BrowserFrameSourceTests(unittest.TestCase):
           file.name = "sample.mp4";
           return file;
         }
-        const { BrowserFrameSource, mp4VideoTiming, prepareBrowserTimeline } = globalThis.VideoDigitizerFrames;
+        const { ApiFrameSource, BrowserFrameSource, mp4VideoTiming, prepareBrowserTimeline } = globalThis.VideoDigitizerFrames;
         """
         script = (
             f"require({json.dumps(str(WEB / 'frame-source.js'))});\n"
@@ -154,6 +154,29 @@ class BrowserFrameSourceTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         # A pending promise alone does not keep Node alive; require an explicit result.
         return json.loads(completed.stdout)
+
+    def test_api_source_accepts_only_matching_reported_frame_ids(self):
+        result = self.run_source("""
+            const requested = [];
+            globalThis.fetch = async url => {
+              requested.push(url);
+              const actual = url.includes("frame=4") ? "4" : "3";
+              return {
+                ok: true,
+                headers: { get: name => name === "X-Frame-Index" ? actual : null },
+                blob: async () => new Blob(["frame"]),
+              };
+            };
+            const source = new ApiFrameSource(frame => `./api/frame?frame=${frame}`);
+            await source.getFrameBlob(4, "jpeg", 0.2);
+            assert.equal(source.isFrameVerified(4), true);
+            await assert.rejects(() => source.getFrameBlob(5, "jpeg", 0.25), /3Fが返されました/);
+            assert.equal(source.isFrameVerified(5), false);
+            source.close();
+            assert.equal(source.isFrameVerified(4), false);
+            console.log(JSON.stringify({ requests: requested.length }));
+        """)
+        self.assertEqual(result["requests"], 2)
 
     def test_load_subscribes_before_fast_metadata_and_reuses_verified_first_frame(self):
         result = self.run_source("""

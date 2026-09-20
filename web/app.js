@@ -157,6 +157,9 @@ const els = {
   stepAnalysisView: $("stepAnalysisView"),
   analysisSummary: $("analysisSummary"),
   fpsInput: $("fpsInput"),
+  analysisTimeBasis: $("analysisTimeBasis"),
+  captureFpsInput: $("captureFpsInput"),
+  captureFpsConfirmed: $("captureFpsConfirmed"),
   autoAdvance: $("autoAdvance"),
   advanceMode: $("advanceMode"),
   stepInput: $("stepInput"),
@@ -191,6 +194,7 @@ const els = {
   videoInfoPanel: $("videoInfoPanel"),
   dirtyMark: $("dirtyMark"),
   frameInfo: $("frameInfo"),
+  frameVerification: $("frameVerification"),
   markerInfo: $("markerInfo"),
   activeMarkerOverlay: $("activeMarkerOverlay"),
   statusText: $("statusText"),
@@ -365,6 +369,7 @@ const state = {
   frameCountEstimated: false,
   frameCountMethod: "",
   frameTimingMode: "",
+  frameVerificationFailure: "",
   trailLength: 30,
   trimStart: 0,
   trimEnd: 0,
@@ -1252,6 +1257,103 @@ function videoPlaybackTime(frame) {
   return Number.isFinite(time) ? time : index / Math.max(0.001, state.fps);
 }
 
+function timestampCoverage() {
+  normalizeTrim();
+  let count = 0;
+  let previous = Number.NEGATIVE_INFINITY;
+  let monotonic = true;
+  for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
+    const value = Number(state.frameTimestamps[String(frame)]);
+    if (!Number.isFinite(value)) continue;
+    count += 1;
+    if (value <= previous) monotonic = false;
+    previous = value;
+  }
+  return { count, expected: trimFrameCount(), complete: count === trimFrameCount(), monotonic };
+}
+
+function captureFps() {
+  return Math.max(0.001, Number(els.captureFpsInput?.value) || state.fps || 30);
+}
+
+function analysisTimeBasisInfo() {
+  const requested = ["playback", "capture_fps", "timestamp_csv"].includes(els.analysisTimeBasis?.value)
+    ? els.analysisTimeBasis.value
+    : "playback";
+  if (requested === "capture_fps") {
+    const confirmed = Boolean(els.captureFpsConfirmed?.checked);
+    return {
+      id: confirmed ? "capture_fps_confirmed" : "capture_fps_unconfirmed",
+      mode: requested,
+      label: `撮影FPS ${captureFps().toFixed(3)}${confirmed ? "（確認済み）" : "（未確認）"}`,
+      verified: confirmed,
+    };
+  }
+  if (requested === "timestamp_csv") {
+    const coverage = timestampCoverage();
+    const verified = coverage.complete && coverage.monotonic;
+    return {
+      id: verified ? "timestamp_csv_verified" : "timestamp_csv_incomplete",
+      mode: requested,
+      label: `時刻CSV ${coverage.count}/${coverage.expected}F${verified ? "" : "（不完全）"}`,
+      verified,
+      coverage,
+    };
+  }
+  return {
+    id: state.frameTimingMode === "per_frame_container" ? "container_playback" : "average_fps_playback",
+    mode: "playback",
+    label: state.frameTimingMode === "per_frame_container" ? "動画の再生時刻（コンテナ実測）" : "動画の再生時刻（平均FPS）",
+    verified: state.frameTimingMode === "per_frame_container",
+  };
+}
+
+function analysisTimeForFrame(frame) {
+  const index = Math.max(0, Math.min(Math.max(0, state.frameCount - 1), Math.round(Number(frame) || 0)));
+  const basis = analysisTimeBasisInfo();
+  if (basis.mode === "capture_fps") return index / captureFps();
+  if (basis.mode === "timestamp_csv") {
+    const stored = Number(state.frameTimestamps[String(index)]);
+    return Number.isFinite(stored) ? stored : Number.NaN;
+  }
+  return videoPlaybackTime(index);
+}
+
+function formattedTime(value, digits = 6) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "";
+}
+
+function updateTimingStatus() {
+  const basis = analysisTimeBasisInfo();
+  if (els.timingStatus) els.timingStatus.textContent = `分析時刻: ${basis.label}`;
+}
+
+function currentFrameVerification() {
+  if (!state.ready) return { status: "idle", label: "フレーム照合: 未選択", detail: "動画が選択されていません" };
+  if (state.seeking) return { status: "pending", label: `フレーム照合: ${state.activeDisplayFrame ?? state.frame}F 照合中`, detail: "表示画像をデコーダーのフレーム時刻と照合しています" };
+  if (state.displayedFrame !== state.frame) {
+    return { status: "failed", label: "フレーム照合: 不一致", detail: state.frameVerificationFailure || `表示 ${state.displayedFrame ?? "-"}F / 対象 ${state.frame}F` };
+  }
+  if (state.frameSource?.kind === "api" && state.frameSource.isFrameVerified?.(state.frame)) {
+    return { status: "verified", label: `フレーム照合: ${state.frame}F 確認済み`, detail: "ローカルデコーダーのフレームIDで取得しました" };
+  }
+  if (state.frameSource?.kind === "api") {
+    return { status: "unavailable", label: "フレーム照合: 利用不可", detail: "ローカルデコーダーから実フレームIDを確認できませんでした" };
+  }
+  if (state.frameSource?.kind === "browser" && state.frameTimingMode === "per_frame_container") {
+    return { status: "verified", label: `フレーム照合: ${state.frame}F 確認済み`, detail: "コンテナ時刻とブラウザの提示時刻が一致しています" };
+  }
+  return { status: "unavailable", label: "フレーム照合: 利用不可", detail: "この動画には正確なフレーム時刻がなく、安全に打点できません" };
+}
+
+function updateFrameVerification() {
+  if (!els.frameVerification) return;
+  const verification = currentFrameVerification();
+  els.frameVerification.dataset.status = verification.status;
+  els.frameVerification.textContent = verification.label;
+  els.frameVerification.title = verification.detail;
+}
+
 async function getStepFrameBitmap(frame, options = {}) {
   const index = Math.max(0, Math.min(Math.max(0, state.frameCount - 1), Math.round(Number(frame) || 0)));
   const resource = await fetchFrameResource(index);
@@ -1302,6 +1404,8 @@ function updateStatus() {
   if (document.activeElement !== els.trimStartInput) els.trimStartInput.value = String(state.trimStart);
   if (document.activeElement !== els.trimEndInput) els.trimEndInput.value = String(state.trimEnd);
   els.canvas.classList.toggle("is-seeking", state.seeking);
+  updateFrameVerification();
+  updateTimingStatus();
   updateAIStatus();
   updateVideoInfo();
   updateCompletionInfo();
@@ -1322,7 +1426,7 @@ function formatBytes(bytes) {
 
 function videoDurationText() {
   if (!state.frameCount || !state.fps) return "-";
-  const seconds = Math.max(0, (state.frameCount - 1) / Math.max(0.001, state.fps));
+  const seconds = Math.max(0, Number(state.videoDurationSec) || (state.frameCount - 1) / Math.max(0.001, state.fps));
   const min = Math.floor(seconds / 60);
   const sec = seconds - min * 60;
   return min > 0 ? `${min}:${sec.toFixed(1).padStart(4, "0")}` : `${sec.toFixed(2)} s`;
@@ -1337,6 +1441,8 @@ function videoInfoRows() {
     ["動画名", state.videoName || "-"],
     ["解像度", state.videoWidth && state.videoHeight ? `${state.videoWidth} x ${state.videoHeight}` : "-"],
     ["平均FPS", state.fps ? Number(state.fps).toFixed(3) : "-"],
+    ["再生時刻", state.frameTimingMode === "per_frame_container" ? "コンテナ実測" : "平均FPSから計算"],
+    ["分析時刻", analysisTimeBasisInfo().label],
     ["フレーム数", state.frameCount ? `${state.frameCount}${state.frameCountEstimated ? "（推定）" : ""} / ID ${state.trimStart}-${state.trimEnd}` : "-"],
     ["時間", videoDurationText()],
     ["ファイルサイズ", formatBytes(identity.size)],
@@ -2002,12 +2108,9 @@ function advanceAfterPoint(recordedFrame, recordedMarker) {
 
 function recordPointAt(pos, options = {}) {
   if (!state.ready || !pos) return;
-  if (state.seeking) {
-    setStatus("フレーム移動中です");
-    return;
-  }
-  if (state.displayedFrame !== state.frame) {
-    setStatus("表示フレームを確認できないため記録しませんでした");
+  const verification = currentFrameVerification();
+  if (verification.status !== "verified") {
+    setStatus(`${verification.detail}。打点は記録しませんでした`);
     return;
   }
   const recordedFrame = state.frame;
@@ -3451,7 +3554,8 @@ function addCurrentFrameEvent() {
     id: createSessionId(),
     name,
     frame,
-    time_sec: Number(frameToTime(frame).toFixed(6)),
+    time_sec: Number.isFinite(frameToTime(frame)) ? Number(frameToTime(frame).toFixed(6)) : null,
+    time_basis: analysisTimeBasisInfo().id,
   };
   state.analysisEvents.push(event);
   state.analysisEvents.sort((a, b) => a.frame - b.frame || a.name.localeCompare(b.name));
@@ -3480,9 +3584,9 @@ function renderAnalysisEvents() {
     const frame = document.createElement("td");
     frame.textContent = String(event.frame);
     const time = document.createElement("td");
-    time.textContent = Number(event.time_sec ?? frameToTime(event.frame)).toFixed(3);
+    time.textContent = formattedTime(event.time_sec, 3) || "-";
     const delta = document.createElement("td");
-    delta.textContent = event.delta_time_sec === null ? "-" : event.delta_time_sec.toFixed(3);
+    delta.textContent = event.delta_time_sec === null ? "-" : (formattedTime(event.delta_time_sec, 3) || "-");
     const actions = document.createElement("td");
     const jump = document.createElement("button");
     jump.type = "button";
@@ -3525,7 +3629,7 @@ function renderEventIntervals() {
     const frames = document.createElement("td");
     frames.textContent = `${interval.start.frame}-${interval.end.frame} (${interval.delta_frame})`;
     const time = document.createElement("td");
-    time.textContent = interval.delta_time_sec.toFixed(3);
+    time.textContent = formattedTime(interval.delta_time_sec, 3) || "-";
     tr.append(name, frames, time);
     els.eventIntervalTableBody.append(tr);
   }
@@ -3690,6 +3794,13 @@ function qualityGateIssues() {
   if (!state.ready) issues.push({ severity: "error", text: "動画が開かれていません" });
   if (!state.videoIdentity?.digest || state.videoIdentity.digest_algorithm !== "sha256") {
     issues.push({ severity: "warning", text: "動画全体のSHA-256が保存されていません" });
+  }
+  const timeBasis = analysisTimeBasisInfo();
+  if (timeBasis.mode === "capture_fps" && !timeBasis.verified) {
+    issues.push({ severity: "error", text: "撮影FPSが未確認です。スロー動画の速度・時間解析を確定できません" });
+  }
+  if (timeBasis.mode === "timestamp_csv" && !timeBasis.verified) {
+    issues.push({ severity: "error", text: `時刻CSVが範囲全体を覆っていません（${timeBasis.coverage.count}/${timeBasis.coverage.expected}F）` });
   }
   if (unresolved > 0) issues.push({ severity: "error", text: `理由未設定の欠測が ${unresolved} 点あります` });
   if (uncertain > 0) issues.push({ severity: "warning", text: `要確認の点が ${uncertain} 点あります` });
@@ -3914,7 +4025,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-reliability2", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity1", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -4035,7 +4146,7 @@ function renderComparison() {
       primaryFrame,
       "primaryObjectUrl",
       serial,
-      frameToTime(primaryFrame),
+      videoPlaybackTime(primaryFrame),
     );
   } else els.comparisonPrimaryImage.removeAttribute("src");
   if (state.comparison.ready) {
@@ -4237,7 +4348,8 @@ function analysisEventsWithTiming() {
   return state.analysisEvents
     .map((event) => ({
       ...event,
-      time_sec: Number(event.time_sec ?? frameToTime(event.frame)) || 0,
+      time_sec: frameToTime(event.frame),
+      time_basis: analysisTimeBasisInfo().id,
     }))
     .sort((a, b) => a.frame - b.frame || a.name.localeCompare(b.name))
     .map((event, index, events) => {
@@ -4644,11 +4756,7 @@ function canvasToSource(event) {
 }
 
 function frameToTime(frame) {
-  const stored = Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
-  if (Number.isFinite(stored)) return stored;
-  const sourceTime = state.frameSource?.timeForFrame?.(frame);
-  if (Number.isFinite(sourceTime)) return sourceTime;
-  return frame / Math.max(0.001, state.fps);
+  return analysisTimeForFrame(frame);
 }
 
 function localFrameToTime(localFrame) {
@@ -4669,8 +4777,6 @@ function frameUrl(frame) {
   const params = new URLSearchParams(sessionQuery());
   params.set("index", String(frame));
   params.set("format", frameQuality());
-  const storedTime = Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
-  if (Number.isFinite(storedTime)) params.set("time_sec", String(storedTime));
   return `./api/frame?${params.toString()}`;
 }
 
@@ -4689,6 +4795,7 @@ function resetFrameCache() {
   state.activeDisplayFrame = null;
   state.displayedFrame = null;
   state.seeking = false;
+  state.frameVerificationFailure = "";
 }
 
 function releaseFrameResource(resource) {
@@ -4785,10 +4892,10 @@ async function fetchFrameResource(frame, token = state.frameCacheToken) {
   }
   state.framePerformance.cacheMisses += 1;
 
-  // Step-only iOS always uses the container timeline, never a legacy manual
-  // digitizer timestamp table restored with an older project.
-  const storedTime = IS_IOS_APP ? NaN : Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
-  const timeSec = Number.isFinite(storedTime) ? storedTime : undefined;
+  // Decoding always follows the video's playback timeline. Capture time and
+  // imported analysis timestamps must never select a different image.
+  const playbackTime = videoPlaybackTime(frame);
+  const timeSec = Number.isFinite(playbackTime) ? playbackTime : undefined;
   let resourcePromise = null;
   if (state.frameSource?.getFrameImage) {
     const directImage = state.frameSource.getFrameImage(frame, timeSec);
@@ -4839,6 +4946,7 @@ function paintFrameResource(resource, frame) {
   context.imageSmoothingEnabled = false;
   context.drawImage(resource.image, 0, 0, canvas.width, canvas.height);
   state.displayedFrame = frame;
+  state.frameVerificationFailure = "";
 }
 
 function prefetchAdjacentFrames(frame, token, serial) {
@@ -4898,6 +5006,7 @@ function startFrameSeek(frame, startedAt = performance.now()) {
   const serial = ++state.seekSerial;
   const token = state.frameCacheToken;
   state.seeking = true;
+  state.frameVerificationFailure = "";
   state.activeDisplayFrame = frame;
   updateStatus();
 
@@ -4922,7 +5031,7 @@ function startFrameSeek(frame, startedAt = performance.now()) {
       draw();
       prefetchAdjacentFrames(frame, token, serial);
     }
-  }).catch(() => {
+  }).catch((error) => {
     if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
     state.framePerformance.displayFailures += 1;
     const pending = state.pendingDisplayFrame;
@@ -4931,13 +5040,14 @@ function startFrameSeek(frame, startedAt = performance.now()) {
     state.pendingDisplayStartedAt = 0;
     state.seeking = false;
     state.activeDisplayFrame = null;
+    state.frameVerificationFailure = error?.message || `フレームID ${frame}を照合できませんでした`;
     if (pending !== null && pending !== frame) {
       startFrameSeek(pending, pendingStartedAt || performance.now());
       return;
     }
     restoreLastDisplayedFrame();
     updateStatus();
-    setStatus("フレーム画像の取得に失敗しました");
+    setStatus(`フレーム画像の取得に失敗しました: ${state.frameVerificationFailure}`);
   });
 }
 
@@ -5054,7 +5164,7 @@ function renderTable() {
     tr.append(idx);
 
     const time = document.createElement("td");
-    time.textContent = frameToTime(frame).toFixed(3);
+    time.textContent = formattedTime(frameToTime(frame), 3) || "-";
     tr.append(time);
 
     for (const marker of state.markers) {
@@ -5586,6 +5696,7 @@ function exportCheckSummary() {
     `範囲: ${state.trimStart}-${state.trimEnd} (${frameTotal}F)`,
     `解像度: ${state.videoWidth || "-"} x ${state.videoHeight || "-"}`,
     `FPS: ${Number(state.fps || 0).toFixed(3)}`,
+    `分析時刻: ${analysisTimeBasisInfo().label}`,
     `入力済み: ${filled}/${totalCells}`,
     `欠測点: ${missing}`,
     `欠測を含むフレーム: ${missingFrames}/${frameTotal}`,
@@ -5613,7 +5724,7 @@ async function exportCsv() {
   const metadata = metadataValues();
   const calibrationValues = calibrationCsvValues();
   const transform = calibrationTransform();
-  const headers = ["global_frame", "time_sec", "local_frame", "local_time_sec", ...metadataHeaders];
+  const headers = ["global_frame", "time_sec", "local_frame", "local_time_sec", "time_basis", "playback_time_sec", ...metadataHeaders];
   for (const marker of state.markers) {
     headers.push(
       `${marker}_x`, `${marker}_y`, `${marker}_src`, `${marker}_quality_note`, `${marker}_confidence`,
@@ -5627,7 +5738,15 @@ async function exportCsv() {
   const rows = [headers];
   for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
     const localFrame = frame - state.trimStart;
-    const row = [frame, frameToTime(frame).toFixed(6), localFrame, localFrameToTime(localFrame).toFixed(6), ...metadata];
+    const row = [
+      frame,
+      formattedTime(frameToTime(frame)),
+      localFrame,
+      formattedTime(localFrameToTime(localFrame)),
+      analysisTimeBasisInfo().id,
+      formattedTime(videoPlaybackTime(frame)),
+      ...metadata,
+    ];
     for (const marker of state.markers) {
       const p = getPoint(frame, marker);
       const analysisPoint = coordinatePoint(p);
@@ -5672,6 +5791,8 @@ async function exportAnalysisCsv() {
     "name",
     "global_frame",
     "time_sec",
+    "time_basis",
+    "playback_time_sec",
     "delta_frame",
     "delta_time_sec",
     ...metadataHeaders,
@@ -5697,9 +5818,11 @@ async function exportAnalysisCsv() {
       "event",
       event.name,
       event.frame,
-      event.time_sec.toFixed(6),
+      formattedTime(event.time_sec),
+      event.time_basis,
+      formattedTime(videoPlaybackTime(event.frame)),
       event.delta_frame ?? "",
-      event.delta_time_sec === null ? "" : event.delta_time_sec.toFixed(6),
+      event.delta_time_sec === null ? "" : formattedTime(event.delta_time_sec),
       ...metadata,
       els.distanceMarkerA.value,
       els.distanceMarkerB.value,
@@ -5716,7 +5839,9 @@ async function exportAnalysisCsv() {
     "analysis_frame",
     "分析フレーム",
     currentAnalysisFrame,
-    frameToTime(currentAnalysisFrame).toFixed(6),
+    formattedTime(frameToTime(currentAnalysisFrame)),
+    analysisTimeBasisInfo().id,
+    formattedTime(videoPlaybackTime(currentAnalysisFrame)),
     "",
     "",
     ...metadata,
@@ -5754,6 +5879,8 @@ async function exportKinematicsCsv() {
   const headers = [
     "global_frame",
     "time_sec",
+    "time_basis",
+    "playback_time_sec",
     "marker",
     "x",
     "y",
@@ -5772,7 +5899,9 @@ async function exportKinematicsCsv() {
     const metrics = kinematicsAtFrame(marker, frame, transform);
     rows.push([
       frame,
-      frameToTime(frame).toFixed(6),
+      formattedTime(frameToTime(frame)),
+      analysisTimeBasisInfo().id,
+      formattedTime(videoPlaybackTime(frame)),
       marker,
       sample ? sample.x.toFixed(6) : "",
       sample ? sample.y.toFixed(6) : "",
@@ -5810,13 +5939,16 @@ async function exportSummaryCsv() {
     pointForAnalysis(frame, els.angleMarkerB.value, transform),
     pointForAnalysis(frame, els.angleMarkerC.value, transform),
   );
-  const intervalMap = new Map(analysisIntervals().map((interval) => [interval.name, interval.delta_time_sec.toFixed(6)]));
+  const intervalMap = new Map(analysisIntervals().map((interval) => [interval.name, formattedTime(interval.delta_time_sec)]));
   const intervalHeaders = [...intervalMap.keys()].map((name) => `interval_${name}_sec`);
   const metadataHeaders = METADATA_FIELDS.map(([key]) => `meta_${key}`);
   const headers = [
     ...metadataHeaders,
     "video_name",
     "fps",
+    "analysis_time_basis",
+    "capture_fps",
+    "capture_fps_confirmed",
     "trim_start",
     "trim_end",
     "marker_count",
@@ -5836,6 +5968,9 @@ async function exportSummaryCsv() {
     ...metadataValues(),
     state.videoName,
     Number(state.fps || 0).toFixed(6),
+    analysisTimeBasisInfo().id,
+    captureFps().toFixed(6),
+    Boolean(els.captureFpsConfirmed.checked),
     state.trimStart,
     state.trimEnd,
     stats.marker_count,
@@ -5865,13 +6000,20 @@ async function exportRealCsv() {
     setStatus("4点法実長換算を有効にしてから実長CSVを出力してください");
     return;
   }
-  const headers = ["global_frame", "time_sec", "local_frame", "local_time_sec"];
+  const headers = ["global_frame", "time_sec", "local_frame", "local_time_sec", "time_basis", "playback_time_sec"];
   for (const marker of state.markers) headers.push(`${marker}_real_x`, `${marker}_real_y`, `${marker}_status`);
   headers.push("unit");
   const rows = [headers];
   for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
     const localFrame = frame - state.trimStart;
-    const row = [frame, frameToTime(frame).toFixed(6), localFrame, localFrameToTime(localFrame).toFixed(6)];
+    const row = [
+      frame,
+      formattedTime(frameToTime(frame)),
+      localFrame,
+      formattedTime(localFrameToTime(localFrame)),
+      analysisTimeBasisInfo().id,
+      formattedTime(videoPlaybackTime(frame)),
+    ];
     for (const marker of state.markers) {
       const real = transformPoint(getPoint(frame, marker), transform);
       row.push(real ? real.x.toFixed(6) : "", real ? real.y.toFixed(6) : "", pointStatusAt(frame, marker));
@@ -5909,8 +6051,8 @@ async function exportReportHtml() {
   const eventRows = analysisEventsWithTiming().map((event) => [
     event.name,
     event.frame,
-    event.time_sec.toFixed(6),
-    event.delta_time_sec === null ? "" : event.delta_time_sec.toFixed(6),
+    formattedTime(event.time_sec),
+    event.delta_time_sec === null ? "" : formattedTime(event.delta_time_sec),
   ]);
   const table = (headers, rows) => `
     <table>
@@ -6000,7 +6142,7 @@ function tableRowsForClipboard() {
   normalizeTrim();
   const rows = [tableHeaders()];
   for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
-    const row = [frame, frameToTime(frame).toFixed(6)];
+    const row = [frame, formattedTime(frameToTime(frame))];
     for (const marker of state.markers) {
       const point = getPoint(frame, marker);
       row.push(point ? formatCoord(point.x) : "", point ? formatCoord(point.y) : "");
@@ -6283,7 +6425,9 @@ function digitizeCoordinates(transform = null) {
       const record = {
         frame,
         local_frame: frame - state.trimStart,
-        time_sec: Number(frameToTime(frame).toFixed(6)),
+        time_sec: Number.isFinite(frameToTime(frame)) ? Number(frameToTime(frame).toFixed(6)) : null,
+        time_basis: analysisTimeBasisInfo().id,
+        playback_time_sec: Number(videoPlaybackTime(frame).toFixed(6)),
         marker,
         x: Number(formatCoord(point.x)),
         y: Number(formatCoord(point.y)),
@@ -6363,7 +6507,11 @@ function digitizeSnapshot({ compact = false } = {}) {
       },
     },
     timing: {
-      mode: Object.keys(state.frameTimestamps).length ? "per_frame" : "constant_fps",
+      mode: analysisTimeBasisInfo().mode,
+      analysis_time_basis: analysisTimeBasisInfo().id,
+      playback_timing_mode: state.frameTimingMode,
+      capture_fps: captureFps(),
+      capture_fps_confirmed: Boolean(els.captureFpsConfirmed?.checked),
       frame_timestamps: state.frameTimestamps,
     },
     coordinate_system: state.coordinateSystem,
@@ -6605,7 +6753,10 @@ function cloudDigitizePayload() {
       lens: structuredClone(state.lens),
     },
     timing: {
-      mode: Object.keys(state.frameTimestamps).length ? "per_frame" : "constant_fps",
+      mode: analysisTimeBasisInfo().mode,
+      analysis_time_basis: analysisTimeBasisInfo().id,
+      capture_fps: captureFps(),
+      capture_fps_confirmed: Boolean(els.captureFpsConfirmed?.checked),
       frame_timestamps: Object.fromEntries(Object.entries(state.frameTimestamps).filter(([frame, value]) => (
         Number(frame) >= state.trimStart && Number(frame) <= state.trimEnd && Number.isFinite(Number(value))
       )).map(([frame, value]) => [String(Number(frame)), Number(value)])),
@@ -6668,6 +6819,8 @@ function diagnosticPayload() {
       pending_frame_requests: state.frameRequests.size,
       prefetch_radius: clientPrefetchRadius(),
       displayed_frame: state.displayedFrame,
+      frame_verification: currentFrameVerification(),
+      analysis_time_basis: analysisTimeBasisInfo(),
       frame_display_samples: state.framePerformance.displayLatencyMs.length,
       frame_display_p50_ms: frameLatencyPercentile(0.5),
       frame_display_p95_ms: frameLatencyPercentile(0.95),
@@ -7433,8 +7586,9 @@ function importTimestampFile(file) {
     }
     if (Object.keys(timestamps).length < 2) throw new Error("frame,time_sec の2列を読み取れませんでした");
     state.frameTimestamps = timestamps;
+    els.analysisTimeBasis.value = "timestamp_csv";
     resetFrameCache();
-    els.timingStatus.textContent = `時刻: CSV実測値 ${Object.keys(timestamps).length}F`;
+    updateTimingStatus();
     recordAudit("import_timestamps", { file: file.name, count: Object.keys(timestamps).length });
     markDirty();
     renderAll();
@@ -7545,6 +7699,7 @@ function loadProject(file) {
             name: String(event.name || "イベント"),
             frame: clampFrame(Number(event.frame) || 0),
             time_sec: Number(event.time_sec ?? frameToTime(Number(event.frame) || 0)) || 0,
+            time_basis: String(event.time_basis || "legacy_saved_time"),
           }))
         : [];
       state.studyTrials = Array.isArray(payload.study_trials || digitize.study_trials)
@@ -7586,10 +7741,14 @@ function loadProject(file) {
       state.frameTimestamps = savedTiming.frame_timestamps && typeof savedTiming.frame_timestamps === "object"
         ? savedTiming.frame_timestamps
         : {};
+      const savedTimeMode = String(savedTiming.mode || "");
+      els.analysisTimeBasis.value = ["playback", "capture_fps", "timestamp_csv"].includes(savedTimeMode)
+        ? savedTimeMode
+        : Object.keys(state.frameTimestamps).length ? "timestamp_csv" : "playback";
+      els.captureFpsInput.value = String(Math.max(0.001, Number(savedTiming.capture_fps) || state.fps || 30));
+      els.captureFpsConfirmed.checked = savedTiming.capture_fps_confirmed === true;
       resetFrameCache();
-      els.timingStatus.textContent = Object.keys(state.frameTimestamps).length
-        ? `時刻: CSV実測値 ${Object.keys(state.frameTimestamps).length}F`
-        : "時刻: 固定FPSとして計算";
+      updateTimingStatus();
       const coordinateSystem = payload.coordinate_system || digitize.coordinate_system || {};
       els.axisOriginX.value = String(Number(coordinateSystem.originX) || 0);
       els.axisOriginY.value = String(Number(coordinateSystem.originY) || 0);
@@ -7713,6 +7872,7 @@ function resetVideoForLoad() {
   state.frameCountEstimated = false;
   state.frameCountMethod = "";
   state.frameTimingMode = "";
+  state.frameVerificationFailure = "";
   state.trimStart = 0;
   state.trimEnd = 0;
   state.videoWidth = 0;
@@ -7746,13 +7906,10 @@ function applyLoadedVideo(metadata, videoIdentity, pendingTrim) {
   els.frameImage.width = state.videoWidth;
   els.frameImage.height = state.videoHeight;
   els.fpsInput.value = String(Number(state.fps.toFixed(6)));
-  if (!Object.keys(state.frameTimestamps).length) {
-    els.timingStatus.textContent = state.frameTimingMode === "per_frame_container"
-      ? `時刻: 動画内の実フレーム時刻 ${state.frameCount}F`
-      : IS_IOS_APP
-        ? "時刻: 固定FPSとして計算（正確なAI分析は利用不可）"
-        : "時刻: 固定FPSとして計算";
+  if (!els.captureFpsConfirmed.checked && els.analysisTimeBasis.value !== "capture_fps") {
+    els.captureFpsInput.value = String(Number(state.fps.toFixed(6)));
   }
+  updateTimingStatus();
   state.ready = true;
   state.videoLoading = false;
   if (els.iosVideoPlaceholder) els.iosVideoPlaceholder.hidden = true;
@@ -8043,7 +8200,29 @@ els.canvas.addEventListener("contextmenu", (event) => {
 
 els.fpsInput.addEventListener("change", () => {
   updateFrameModel();
+  if (!els.captureFpsConfirmed.checked && els.analysisTimeBasis.value !== "capture_fps") {
+    els.captureFpsInput.value = els.fpsInput.value;
+  }
   markDirty();
+});
+els.analysisTimeBasis.addEventListener("change", () => {
+  updateTimingStatus();
+  markDirty();
+  renderAll();
+  const basis = analysisTimeBasisInfo();
+  setStatus(`分析時刻を「${basis.label}」に変更しました`);
+});
+els.captureFpsInput.addEventListener("change", () => {
+  els.captureFpsInput.value = String(captureFps());
+  els.captureFpsConfirmed.checked = false;
+  updateTimingStatus();
+  markDirty();
+  renderAll();
+});
+els.captureFpsConfirmed.addEventListener("change", () => {
+  updateTimingStatus();
+  markDirty();
+  renderAll();
 });
 els.advanceMode.addEventListener("change", markDirty);
 els.stepInput.addEventListener("change", markDirty);

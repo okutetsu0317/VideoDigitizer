@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-reliability2" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-reliability2" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-reliability2" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-reliability2" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-integrity1" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-integrity1" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-integrity1" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-integrity1" />
     <script src="./native-bridge.js?v=2.2.0-ios1"></script>
   </head>
   <body>
@@ -60,7 +60,10 @@
           <details class="toolbar-menu">
             <summary>入力</summary>
             <div class="toolbar-popover control-grid">
-              <label class="field-block">平均FPS<input id="fpsInput" type="number" min="1" max="240" step="0.001" value="30" /></label>
+              <label class="field-block">動画の平均FPS<input id="fpsInput" type="number" min="1" max="1000" step="0.001" value="30" /></label>
+              <label class="field-block wide-control">分析時刻<select id="analysisTimeBasis"><option value="playback" selected>動画の再生時刻</option><option value="capture_fps">撮影FPSから計算</option><option value="timestamp_csv">時刻CSV</option></select></label>
+              <label class="field-block">撮影FPS<input id="captureFpsInput" type="number" min="1" max="100000" step="0.001" value="30" /></label>
+              <label class="field-block checkbox-field">撮影FPS確認済み<input id="captureFpsConfirmed" type="checkbox" /></label>
               <label class="field-block">送り幅<input id="stepInput" type="number" min="1" step="1" value="1" /></label>
               <label class="field-block">打点後<select id="advanceMode"><option value="frame" selected>次フレーム</option><option value="marker-frame">次点→次フレーム</option><option value="marker">次点</option></select></label>
               <label class="field-block checkbox-field">自動送り<input id="autoAdvance" type="checkbox" checked /></label>
@@ -112,6 +115,7 @@
           <span id="dirtyMark"></span>
         </div>
         <div id="frameInfo">フレーム 0 / 0</div>
+        <div id="frameVerification" class="frame-verification" data-status="idle" title="打点対象と表示画像のフレームID照合状態">フレーム照合: 未選択</div>
         <div id="markerInfo">マーカー 右手先</div>
         <div class="mode-actions">
           <div id="appMode" class="mode-indicator">処理: 確認中</div>
@@ -899,12 +903,12 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-reliability2"></script>
-    <script src="./pwa.js?v=2.2.0-reliability2"></script>
-    <script src="./ai-pose.js?v=2.2.0-reliability2"></script>
-    <script src="./point-tracker.js?v=2.2.0-reliability2"></script>
-    <script src="./step-analysis-core.js?v=2.2.0-reliability2"></script>
-    <script src="./step-analysis.js?v=2.2.0-reliability2"></script>
-    <script src="./app.js?v=2.2.0-reliability2"></script>
+    <script src="./frame-source.js?v=2.2.0-integrity1"></script>
+    <script src="./pwa.js?v=2.2.0-integrity1"></script>
+    <script src="./ai-pose.js?v=2.2.0-integrity1"></script>
+    <script src="./point-tracker.js?v=2.2.0-integrity1"></script>
+    <script src="./step-analysis-core.js?v=2.2.0-integrity1"></script>
+    <script src="./step-analysis.js?v=2.2.0-integrity1"></script>
+    <script src="./app.js?v=2.2.0-integrity1"></script>
   </body>
 </html>

@@ -411,15 +411,26 @@
     constructor(urlForFrame) {
       this.kind = "api";
       this.urlForFrame = urlForFrame;
+      this.verifiedFrames = new Set();
     }
 
     async getFrameBlob(frame, format, timeSec) {
       const response = await fetch(this.urlForFrame(frame, format, timeSec), { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const actualHeader = response.headers.get("X-Frame-Index");
+      const actual = actualHeader === null ? Number.NaN : Number(actualHeader);
+      if (Number.isInteger(actual) && actual !== Math.round(Number(frame) || 0)) {
+        throw new Error(`フレームID ${frame}を要求しましたが${actual}Fが返されました`);
+      }
+      if (Number.isInteger(actual)) this.verifiedFrames.add(actual);
       return response.blob();
     }
 
-    close() {}
+    isFrameVerified(frame) {
+      return this.verifiedFrames.has(Math.round(Number(frame) || 0));
+    }
+
+    close() { this.verifiedFrames.clear(); }
   }
 
   class BrowserFrameSource {

@@ -121,11 +121,29 @@ class DataEfficiencyTests(unittest.TestCase):
 
     def test_points_require_a_successfully_displayed_matching_frame(self):
         app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
+        html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn("state.displayedFrame !== state.frame", app)
-        self.assertIn("表示フレームを確認できないため記録しませんでした", app)
+        self.assertIn('verification.status !== "verified"', app)
+        self.assertIn("function currentFrameVerification()", app)
+        self.assertIn('state.frameTimingMode === "per_frame_container"', app)
         self.assertIn("state.displayedFrame = frame", app)
         self.assertIn("restoreLastDisplayedFrame();", app)
+        self.assertIn('id="frameVerification"', html)
+
+    def test_analysis_time_is_separate_from_video_playback_time(self):
+        app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
+        html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="analysisTimeBasis"', html)
+        self.assertIn('id="captureFpsInput"', html)
+        self.assertIn('id="captureFpsConfirmed"', html)
+        self.assertIn("function videoPlaybackTime(frame)", app)
+        self.assertIn("function analysisTimeForFrame(frame)", app)
+        self.assertIn("return analysisTimeForFrame(frame);", app)
+        self.assertIn("const playbackTime = videoPlaybackTime(frame);", app)
+        self.assertIn('"playback_time_sec"', app)
+        self.assertIn('"capture_fps_confirmed"', app)
 
     def test_analysis_aggregate_runs_in_a_lazy_worker_and_rejects_stale_results(self):
         app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
@@ -177,7 +195,7 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertIn("timeForFrame(frame)", source)
         self.assertIn("seekTimeForFrame(frame)", source)
         self.assertIn("state.frameSource?.timeForFrame?.(frame)", app)
-        self.assertIn("動画内の実フレーム時刻", app)
+        self.assertIn("動画の再生時刻（コンテナ実測）", app)
 
     def test_frame_status_distinguishes_zero_based_id_from_total_count(self):
         app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
@@ -189,8 +207,8 @@ class DataEfficiencyTests(unittest.TestCase):
         html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
         worker = (ROOT / "web_viewer" / "service-worker.js").read_text(encoding="utf-8")
 
-        self.assertIn("2.2.0-reliability2", html)
-        self.assertIn("2.2.0-reliability2", worker)
+        self.assertIn("2.2.0-integrity1", html)
+        self.assertIn("2.2.0-integrity1", worker)
 
     def test_pwa_updates_without_losing_active_unsaved_work(self):
         pwa = (ROOT / "web_viewer" / "pwa.js").read_text(encoding="utf-8")

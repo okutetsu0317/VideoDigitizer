@@ -308,7 +308,7 @@ button:hover,
 
 .statusbar {
   display: grid;
-  grid-template-columns: minmax(160px, 1.4fr) minmax(150px, 0.8fr) minmax(170px, 1fr) auto minmax(180px, 1.2fr);
+  grid-template-columns: minmax(160px, 1.4fr) minmax(150px, 0.8fr) auto minmax(170px, 1fr) auto minmax(180px, 1.2fr);
   gap: 12px;
   align-items: center;
   min-height: 42px;
@@ -316,6 +316,38 @@ button:hover,
   background: #fbfcfd;
   border-bottom: 1px solid var(--line);
   font-size: 14px;
+}
+
+.frame-verification {
+  width: max-content;
+  max-width: 220px;
+  padding: 4px 7px;
+  border: 1px solid #c8d0d8;
+  border-radius: 5px;
+  color: #56616d;
+  background: #f1f3f5;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.frame-verification[data-status="pending"] {
+  border-color: #d6bd73;
+  color: #735c14;
+  background: #fff8dc;
+}
+
+.frame-verification[data-status="verified"] {
+  border-color: #91c5a0;
+  color: #236336;
+  background: #eaf6ed;
+}
+
+.frame-verification[data-status="unavailable"],
+.frame-verification[data-status="failed"] {
+  border-color: #d69b91;
+  color: #8b3025;
+  background: #fff0ed;
 }
 
 .mode-indicator {
