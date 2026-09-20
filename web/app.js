@@ -1246,6 +1246,7 @@ function setActiveView(view) {
   els.stepAnalysisView?.classList.toggle("hidden", !stepAnalysis);
   globalThis.VideoDigitizerStepAnalysis?.setActive?.(stepAnalysis);
   if (analysis) renderAnalysis();
+  else if (typeof clearComparisonPreview === "function") clearComparisonPreview();
   draw();
 }
 
@@ -4023,7 +4024,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity2", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity3", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -4110,6 +4111,20 @@ function replaceComparisonObjectUrl(key, url) {
   const previous = state.comparison[key];
   if (previous) URL.revokeObjectURL(previous);
   state.comparison[key] = url;
+}
+
+function clearComparisonPreview() {
+  if (!state.comparison) return;
+  state.comparison.renderSerial += 1;
+  state.comparison.lastKey = "";
+  for (const [key, image] of [
+    ["primaryObjectUrl", els.comparisonPrimaryImage],
+    ["secondaryObjectUrl", els.comparisonSecondaryImage],
+  ]) {
+    image?.removeAttribute("src");
+    if (state.comparison[key]) URL.revokeObjectURL(state.comparison[key]);
+    state.comparison[key] = "";
+  }
 }
 
 function loadComparisonFrame(image, source, frame, key, serial, timeSec) {
@@ -7857,6 +7872,7 @@ async function uploadVideoFile(file) {
 function resetVideoForLoad() {
   const pendingTrim = state.pendingTrim;
   globalThis.VideoDigitizerStepAnalysis?.onVideoReset?.();
+  clearComparisonPreview();
   state.frameSource?.close?.();
   state.frameSource = null;
   if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);

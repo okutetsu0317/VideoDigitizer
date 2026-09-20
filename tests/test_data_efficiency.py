@@ -187,6 +187,21 @@ class DataEfficiencyTests(unittest.TestCase):
         self.assertIn("function scheduleCursorDraw()", app)
         self.assertIn("state.cursorDrawRequest = requestAnimationFrame", app)
 
+    def test_long_session_check_covers_resource_limits(self):
+        app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
+        script = (ROOT / "tests" / "verify_long_session.cjs").read_text(encoding="utf-8")
+        workflow = (ROOT / "github_release" / ".github" / "workflows" / "long-session.yml").read_text(encoding="utf-8")
+
+        self.assertIn("cacheBytes <= sample.cacheByteLimit", script)
+        self.assertIn("pendingFrameRequests", script)
+        self.assertIn("activeObjectUrls", script)
+        self.assertIn("activeWorkers", script)
+        self.assertIn("Heap grew by", script)
+        self.assertIn('else if (typeof clearComparisonPreview === "function") clearComparisonPreview();', app)
+        self.assertIn("function clearComparisonPreview()", app)
+        self.assertIn("schedule:", workflow)
+        self.assertIn('LONG_SESSION_CYCLES: "20"', workflow)
+
     def test_trim_inputs_apply_after_typing_and_on_enter(self):
         app = (ROOT / "web_viewer" / "app.js").read_text(encoding="utf-8")
 
@@ -224,8 +239,8 @@ class DataEfficiencyTests(unittest.TestCase):
         html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
         worker = (ROOT / "web_viewer" / "service-worker.js").read_text(encoding="utf-8")
 
-        self.assertIn("2.2.0-integrity2", html)
-        self.assertIn("2.2.0-integrity2", worker)
+        self.assertIn("2.2.0-integrity3", html)
+        self.assertIn("2.2.0-integrity3", worker)
 
     def test_pwa_updates_without_losing_active_unsaved_work(self):
         pwa = (ROOT / "web_viewer" / "pwa.js").read_text(encoding="utf-8")

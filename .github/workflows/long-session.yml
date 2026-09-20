@@ -1,0 +1,31 @@
+name: Weekly Long Session Check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 20 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  browser-load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install browser test runtime
+        run: npm install --no-save playwright@1.55.0
+
+      - name: Run repeated video workflow
+        env:
+          LONG_SESSION_CYCLES: "20"
+          CHROME_PATH: /usr/bin/google-chrome
+        run: node tests/verify_long_session.cjs
