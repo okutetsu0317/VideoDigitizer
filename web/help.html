@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https://huggingface.co https://*.hf.co https://*.huggingface.co https://raw.githubusercontent.com; img-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <title>使い方QA | VideoDigitizer</title>
+  <link rel="icon" href="./icon-192.png" />
+  <link rel="stylesheet" href="./help.css?v=2.2.0-qa1" />
+  <script type="module" src="./help.js?v=2.2.0-qa1"></script>
+</head>
+<body>
+  <header><a class="brand" href="./index.html"><img src="./icon-192.png" alt="" width="30" height="30" />VideoDigitizer</a><span>使い方QA</span><a class="settings-jump" href="#qaSettings">AI設定</a><a href="./index.html">デジタイズ画面</a></header>
+  <main>
+    <aside aria-label="参照資料">
+      <h1>使い方QA</h1>
+      <label for="guideFilter">資料を探す</label>
+      <input id="guideFilter" type="search" placeholder="例：4点法、保存" maxlength="1000" />
+      <nav id="topics" aria-label="使い方の項目"></nav>
+      <details id="qaSettings" class="ai-settings" open>
+        <summary>端末内AI <span id="aiBadge">OFF</span></summary>
+        <p class="notice">Qwen3 0.6B・試験機能<br />初回取得：約400MB。GPUメモリ目安1.5GB以上。質問は送信しませんが、モデル取得先にはIPアドレス等が伝わります。</p>
+        <button id="loadAI" type="button">端末内AIを読み込む</button>
+        <progress id="loadProgress" max="1" value="0" hidden aria-label="モデル読み込み"></progress>
+        <p id="aiStatus" role="status">AIなしの資料検索を利用できます。</p>
+        <div class="ai-actions"><button id="releaseAI" type="button" disabled>AIを終了</button><button id="deleteModel" type="button">モデル削除</button></div>
+        <details><summary>保存と注意事項</summary><p class="notice">会話はこのページのメモリ内だけに残り、再読み込みで消えます。モデルはブラウザ内に保存されますが、容量不足等で消える場合があります。動画・座標は参照しません。AIが資料を選び、説明の原文を表示します。選び違いもあるため参照資料を確認してください。<a href="./vendor/webllm/NOTICE.md">モデル・ライセンス</a></p></details>
+      </details>
+    </aside>
+    <section class="chat" aria-label="質問と回答">
+      <div class="chat-heading"><h2>操作について質問</h2><button id="clearChat" type="button">会話を消去</button></div>
+      <div id="conversation" role="log" aria-label="会話" aria-live="polite" aria-relevant="additions"></div>
+      <form id="questionForm">
+        <label for="question">質問</label>
+        <textarea id="question" rows="3" maxlength="1000" placeholder="例：4点法で実際の長さに換算するには？" required></textarea>
+        <div class="compose-actions"><span id="modeLabel">資料検索</span><button id="stopAnswer" type="button" hidden>中止</button><button id="sendQuestion" type="submit">質問する</button></div>
+      </form>
+    </section>
+  </main>
+  <dialog id="modelConsent"><h2>端末内AIを読み込みますか？</h2><p>初回は約400MBのモデル等を取得します。通信量と空き容量を確認してください。AIの実行中は動画処理と端末のGPU・メモリを共有します。</p><p>Hugging Face等から取得します。質問文・動画・座標を送る処理はありません。</p><div><button id="cancelLoad" type="button">キャンセル</button><button id="confirmLoad" type="button">取得して開始</button></div></dialog>
+</body>
+</html>

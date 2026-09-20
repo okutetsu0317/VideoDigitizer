@@ -2599,3 +2599,4 @@ html.ios-app .file-button {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
+:root .help-link { text-decoration: none; }

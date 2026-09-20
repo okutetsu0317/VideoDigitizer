@@ -1,0 +1,64 @@
+:root { color-scheme:light; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:#252a30; background:#fff; font-size:15px; }
+* { box-sizing:border-box; letter-spacing:0; }
+body { margin:0; }
+header { height:64px; border-bottom:1px solid #d9dfe4; display:flex; align-items:center; gap:22px; padding:0 24px; }
+header > a:last-child { margin-left:auto; }
+.settings-jump { display:none; }
+a { color:#235cac; text-underline-offset:3px; }
+.brand { display:flex; align-items:center; gap:9px; color:inherit; font-weight:700; text-decoration:none; }
+main { display:grid; grid-template-columns:310px minmax(0,1fr); max-width:1400px; margin:auto; height:calc(100dvh - 64px); }
+aside { padding:22px; overflow:auto; border-right:1px solid #d9dfe4; background:#f7f8fa; }
+h1 { font-size:22px; margin:0 0 20px; }
+h2 { font-size:18px; margin:0; }
+label { display:block; font-size:13px; font-weight:600; margin-bottom:6px; }
+button,input,textarea { font:inherit; }
+input,textarea { width:100%; background:#fff; color:inherit; border:1px solid #bcc7d0; border-radius:5px; padding:10px; }
+textarea { resize:vertical; min-height:85px; max-height:180px; }
+button { border:1px solid #c3ccd5; border-radius:5px; background:#fff; color:inherit; padding:8px 11px; cursor:pointer; line-height:1.4; }
+button:hover { background:#edf2f6; }
+button:disabled { opacity:.55; cursor:default; }
+:focus-visible { outline:3px solid #3989d2; outline-offset:2px; }
+#topics { display:grid; gap:2px; margin:14px 0 22px; max-height:270px; overflow:auto; }
+#topics button { border:0; border-radius:3px; text-align:left; font-size:13px; padding:8px; background:transparent; }
+#topics button:hover { background:#e5edf5; }
+.ai-settings { border-top:1px solid #d9dfe4; padding-top:16px; }
+summary { cursor:pointer; font-weight:600; font-size:14px; }
+.notice,#aiStatus { font-size:12px; line-height:1.8; color:#515e6a; overflow-wrap:anywhere; }
+#aiBadge { color:#347154; float:right; font-size:12px; }
+#loadAI { width:100%; border-color:#306cb0; color:#245ea3; }
+progress { width:100%; margin-top:12px; accent-color:#307455; }
+.ai-actions { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0 20px; }
+.ai-actions button { font-size:12px; }
+.chat { min-height:0; display:flex; flex-direction:column; padding:22px 28px; }
+.chat-heading { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:18px; border-bottom:1px solid #e0e5ea; }
+#clearChat { font-size:12px; }
+#conversation { flex:1; overflow:auto; padding:10px 4px 20px; overscroll-behavior:contain; }
+.message { padding:18px 0; border-bottom:1px solid #e5e9ec; overflow-wrap:anywhere; }
+.message h3 { margin:0 0 8px; font-size:13px; color:#526576; }
+.message.user h3 { color:#245ea3; }
+.message p { margin:0; white-space:pre-wrap; line-height:1.85; font-size:14px; }
+.message details { margin-top:12px; border-left:3px solid #92b6a3; padding-left:12px; }
+.message details p { margin-top:8px; font-size:13px; }
+.message .answer-label { margin-top:12px; font-size:12px; color:#856121; }
+#questionForm { border-top:1px solid #e0e5ea; padding-top:16px; }
+.compose-actions { display:flex; align-items:center; gap:10px; margin-top:10px; }
+#modeLabel { font-size:12px; color:#586773; margin-right:auto; }
+#sendQuestion,#confirmLoad { color:#fff; border-color:#245fa6; background:#245fa6; }
+dialog { width:min(480px,calc(100% - 32px)); border:1px solid #c3ccd5; border-radius:8px; padding:24px; }
+dialog::backdrop { background:#17212866; }
+dialog p { font-size:14px; line-height:1.8; }
+dialog > div { display:flex; justify-content:flex-end; gap:10px; }
+[hidden] { display:none !important; }
+@media(max-width:760px) {
+  header { padding:0 12px; gap:12px; height:58px; font-size:12px; }
+  .brand { gap:5px; } .brand img { width:24px; height:24px; }
+  header > span { display:none; }
+  main { height:auto; display:flex; flex-direction:column; }
+  aside { border-right:0; border-bottom:1px solid #d9dfe4; padding:16px; }
+  h1 { margin-bottom:12px; font-size:20px; }
+  #topics { max-height:110px; margin-bottom:14px; }
+  .chat { order:-1; height:calc(100dvh - 58px); max-height:none; min-height:420px; padding:16px; }
+  .settings-jump { display:block; margin-left:auto; }
+  header > a:last-child { margin-left:0; }
+  .chat-heading { padding-bottom:12px; }
+}

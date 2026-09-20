@@ -29,6 +29,13 @@ VideoDigitizerのmacOS配布物には、以下の第三者ソフトウェアが�
 
 VideoDigitizerは、上記プロジェクトからの公認、提携、保証を受けるものではありません。
 
+## Optional Browser QA
+
+Web版の使い方QAにはWebLLM 0.2.85 (Apache-2.0) を同梱します。
+利用者が明示的に開始した場合だけ、Qwen3-0.6B (Apache-2.0) のMLC量子化モデルを取得します。
+モデルの重み自体は配布リポジトリには含めません。固定リビジョン、WebLLMのライセンス、
+同梱コンポーネントの通知はWeb配布物の `vendor/webllm/NOTICE.md` と各LICENSEファイルを参照してください。
+
 ログイン画面ではGoogleが配布する承認済みの「Sign in with Google」ボタン画像を、
 Google Identityのブランディングガイドラインに従って使用します。この画像はGoogleの
 商標資産であり、VideoDigitizerの名称、ロゴ、提携関係を示すものではありません。
