@@ -116,6 +116,7 @@
       const headerBuffer = await file.slice(offset, Math.min(file.size, offset + 16)).arrayBuffer();
       const header = new DataView(headerBuffer);
       let size = header.getUint32(0);
+      const extendsToEnd = size === 0;
       const type = fourcc(header, 4);
       let headerSize = 8;
       if (size === 1) {
@@ -126,7 +127,9 @@
         size = file.size - offset;
       }
       if (!Number.isFinite(size) || size < headerSize || offset + size > file.size) return null;
-      if (type === wantedType) return { offset, size, headerSize };
+      if (type === wantedType || (!wantedType && offset + size === file.size)) {
+        return { offset, size, headerSize, extendsToEnd };
+      }
       offset += size;
       inspected += 1;
     }
@@ -148,7 +151,7 @@
         size = end - offset;
       }
       if (!Number.isFinite(size) || size < headerSize || offset + size > end) break;
-      boxes.push({ type, dataStart: offset + headerSize, end: offset + size });
+      boxes.push({ type, dataStart: offset + headerSize, end: offset + size, headerSize });
       offset += size;
     }
     return boxes;
@@ -179,7 +182,7 @@
     for (let entry = 0; entry < entryCount; entry += 1, offset += 8) {
       const count = view.getUint32(offset);
       const delta = view.getUint32(offset + 4);
-      if (!count || !delta || sample + count > sampleCount) return null;
+      if (!count || sample + count > sampleCount) return null;
       for (let index = 0; index < count; index += 1) {
         ticks[sample] = decodeTime;
         decodeTime += delta;
@@ -192,6 +195,7 @@
     if (!ctts) return ticks;
     if (ctts.dataStart + 8 > ctts.end) return null;
     const cttsVersion = view.getUint8(ctts.dataStart);
+    if (cttsVersion !== 0 && cttsVersion !== 1) return null;
     const cttsEntryCount = view.getUint32(ctts.dataStart + 4);
     if (ctts.dataStart + 8 + cttsEntryCount * 8 > ctts.end) return null;
     sample = 0;
@@ -215,11 +219,13 @@
   function editListEntries(view, trak) {
     const edts = firstChild(view, trak, "edts");
     const elst = edts && firstChild(view, edts, "elst");
-    if (!elst || elst.dataStart + 8 > elst.end) return [];
+    if (!elst) return [];
+    if (elst.dataStart + 8 > elst.end) throw new Error("動画の編集時刻情報が壊れています");
     const version = view.getUint8(elst.dataStart);
+    if (version !== 0 && version !== 1) throw new Error("この動画の編集時刻形式には対応していません");
     const entryCount = view.getUint32(elst.dataStart + 4);
     const entrySize = version === 1 ? 20 : 12;
-    if (elst.dataStart + 8 + entryCount * entrySize > elst.end) return [];
+    if (elst.dataStart + 8 + entryCount * entrySize > elst.end) throw new Error("動画の編集時刻情報が壊れています");
     const entries = [];
     let offset = elst.dataStart + 8;
     for (let index = 0; index < entryCount; index += 1, offset += entrySize) {
@@ -235,6 +241,14 @@
     if (!ticks?.length || trackTimeScale <= 0) return null;
     const mediaTimes = Array.from(ticks, (value) => value / trackTimeScale);
     const mapped = [];
+    if (edits.length) {
+      const mediaEdits = edits.filter((edit) => edit.mediaTime >= 0);
+      if (movieTimeScale <= 0 || mediaEdits.length !== 1
+        || edits.some((edit, index) => edit.mediaRate !== 1 || edit.segmentDuration <= 0
+          || edit.mediaTime < -1 || (edit.mediaTime === -1 && index !== 0))) {
+        throw new Error("複数区間・速度変更・静止を含む編集動画は、正確なフレーム対応を確認できません。通常速度の動画として書き出してから開いてください");
+      }
+    }
     if (edits.length && movieTimeScale > 0) {
       let movieCursor = 0;
       for (const edit of edits) {
@@ -252,17 +266,16 @@
       }
     }
 
-    const result = mapped.length ? mapped : mediaTimes;
+    const result = edits.length ? mapped : mediaTimes;
     result.sort((a, b) => a - b);
-    let mediaTimeOrigin = 0;
-    if (!mapped.length && result.length) {
-      mediaTimeOrigin = result[0];
-      for (let index = 0; index < result.length; index += 1) result[index] -= mediaTimeOrigin;
+    // currentTime and requestVideoFrameCallback use the presentation timeline.
+    // Retain its positive start instead of inferring a shift from decoded frames.
+    const timestamps = result.filter((value) => Number.isFinite(value) && value >= 0);
+    if (!timestamps.length) throw new Error("表示可能なフレーム時刻が動画にありません");
+    if (timestamps.some((value, index) => index > 0 && value <= timestamps[index - 1])) {
+      throw new Error("重複したフレーム時刻があり、画像とフレーム番号を一意に対応できません");
     }
-    return {
-      timestamps: Float64Array.from(result.filter((value) => Number.isFinite(value) && value >= 0)),
-      mediaTimeOrigin,
-    };
+    return { timestamps: Float64Array.from(timestamps) };
   }
 
   function videoTrackTiming(view, trak, movieTimeScale, quickTime = false) {
@@ -278,6 +291,9 @@
     if (!sampleSize || sampleSize.dataStart + 12 > sampleSize.end) return null;
     const sampleCount = view.getUint32(sampleSize.dataStart + 8);
     const ticks = samplePresentationTicks(view, stbl, sampleCount, quickTime);
+    if (!ticks || trackTimeScale <= 0) {
+      throw new Error("動画のフレーム時刻を正確に読み取れません。通常のMP4/MOVとして書き出してから開いてください");
+    }
     const timeline = presentationTimeline(
       ticks,
       trackTimeScale,
@@ -287,7 +303,6 @@
     return {
       frameCount: timeline?.timestamps?.length || sampleCount,
       timestamps: timeline?.timestamps || null,
-      mediaTimeOrigin: timeline?.mediaTimeOrigin || 0,
     };
   }
 
@@ -307,9 +322,11 @@
     const view = new DataView(buffer);
     const root = { dataStart: 0, end: view.byteLength };
     const movieTimeScale = mediaTimeScale(view, firstChild(view, root, "mvhd"));
-    let best = { frameCount: 0, timestamps: null, mediaTimeOrigin: 0 };
+    let best = { frameCount: 0, timestamps: null };
+    let videoTracks = 0;
     for (const trak of childBoxes(view, root.dataStart, root.end).filter((box) => box.type === "trak")) {
       const timing = videoTrackTiming(view, trak, movieTimeScale, quickTime);
+      if (timing && ++videoTracks > 1) throw new Error("複数の映像トラックがある動画です。映像トラックを1つにして書き出してください");
       if (timing && timing.frameCount > best.frameCount) best = timing;
     }
     return best;
@@ -317,6 +334,77 @@
 
   async function exactMp4FrameCount(file) {
     return (await mp4VideoTiming(file)).frameCount;
+  }
+
+  async function prepareBrowserTimeline(file, timing) {
+    const origin = timing.timestamps?.[0] || 0;
+    if (!(origin > 0)) return { file, offset: 0 };
+    const moov = await topLevelBox(file, "moov");
+    if (!moov || moov.headerSize !== 8) return { file, offset: 0 };
+    const lastBox = await topLevelBox(file, null);
+    if (!lastBox || lastBox.extendsToEnd) {
+      return {file,offset:0};
+    }
+    const bytes = new Uint8Array(await file.slice(moov.offset, moov.offset + moov.size).arrayBuffer());
+    const view = new DataView(bytes.buffer);
+    const root = { dataStart: 8, end: bytes.length };
+    const movieScale = mediaTimeScale(view, firstChild(view, root, "mvhd"));
+    const tracks = childBoxes(view, root.dataStart, root.end).filter(box => box.type === "trak");
+    for (const trak of tracks) {
+      const mdia = firstChild(view, trak, "mdia");
+      const hdlr = mdia && firstChild(view, mdia, "hdlr");
+      if (!hdlr || hdlr.dataStart + 12 > hdlr.end || fourcc(view, hdlr.dataStart + 8) !== "vide") continue;
+      const existingEdts = firstChild(view, trak, "edts");
+      if (trak.headerSize !== 8 || (existingEdts && existingEdts.headerSize !== 8)) return {file,offset:0};
+      const edits = editListEntries(view,trak);
+      if (existingEdts && !(edits.length === 2 && edits[0].mediaTime === -1 && edits[1].mediaRate === 1)) {
+        return {file,offset:0};
+      }
+      const tkhd = firstChild(view, trak, "tkhd");
+      const mdhd = firstChild(view, mdia, "mdhd");
+      const scale = mediaTimeScale(view, mdhd);
+      if (!tkhd || !movieScale || !scale) return { file, offset: 0 };
+      const durationOffset = tkhd.dataStart + (view.getUint8(tkhd.dataStart) === 1 ? 28 : 20);
+      if (durationOffset + 8 > tkhd.end) return { file, offset: 0 };
+      const duration = existingEdts ? edits[1].segmentDuration : (view.getUint8(tkhd.dataStart) === 1
+        ? uint64(view, durationOffset) : view.getUint32(durationOffset));
+      const ticks = existingEdts ? edits[1].mediaTime : Math.round(origin * scale);
+      const offset = existingEdts ? edits[0].segmentDuration / movieScale : ticks / scale;
+      if (!duration || !Number.isSafeInteger(ticks) || (!existingEdts && Math.abs(offset - origin) > 1e-9)) {
+        return { file, offset: 0 };
+      }
+      // An explicit rate-1 edit makes browser seek and presentation clocks
+      // agree. Keep media bytes/chunk offsets untouched: retire the old moov
+      // as a same-sized free box and append the amended metadata at EOF.
+      const edit = new Uint8Array(44);
+      const e = new DataView(edit.buffer);
+      e.setUint32(0,44); e.setUint32(4,0x65647473); // edts
+      e.setUint32(8,36); e.setUint32(12,0x656c7374); // elst v1
+      e.setUint8(16,1); e.setUint32(20,1);
+      e.setBigUint64(24,BigInt(duration)); e.setBigInt64(32,BigInt(ticks));
+      e.setUint32(40,65536);
+      const insertStart = existingEdts ? existingEdts.dataStart - 8 : trak.end;
+      const insertEnd = existingEdts ? existingEdts.end : trak.end;
+      const growth = edit.length - (insertEnd - insertStart);
+      const amended = new Uint8Array(bytes.length + growth);
+      amended.set(bytes.subarray(0,insertStart));
+      amended.set(edit,insertStart);
+      amended.set(bytes.subarray(insertEnd),insertStart + edit.length);
+      const amendedView = new DataView(amended.buffer);
+      amendedView.setUint32(0,amended.length);
+      amendedView.setUint32(trak.dataStart - 8,trak.end - trak.dataStart + 8 + growth);
+      const freeHeader = bytes.slice(0,8);
+      new DataView(freeHeader.buffer).setUint32(4,0x66726565);
+      const browserFile = new Blob([file.slice(0,moov.offset),freeHeader,
+        file.slice(moov.offset + 8),amended],{type:file.type});
+      const normalized = await mp4VideoTiming(browserFile);
+      if (normalized.frameCount !== timing.frameCount || !normalized.timestamps
+        || normalized.timestamps.some((time,index) => Math.abs(time + offset - timing.timestamps[index]) > 0.000001)) {
+        throw new Error("動画の時刻調整でフレーム対応を保てませんでした。通常のMP4として書き出してください");
+      }
+      return {file:browserFile,offset};
+    }
+    return {file,offset:0};
   }
 
   class ApiFrameSource {
@@ -344,14 +432,12 @@
       this.context = canvas.getContext("2d", { alpha: false, desynchronized: true });
       this.duration = Number(video.duration) || 0;
       this.frameTimes = timing.timestamps?.length ? timing.timestamps : null;
-      this.mediaTimeOrigin = Number.isFinite(Number(timing.mediaTimeOrigin))
-        ? Number(timing.mediaTimeOrigin) : 0;
-      this.browserMediaTimeOffset = null;
       this.exactFrameCount = Math.max(0, Math.round(Number(timing.frameCount) || 0));
       this.fps = this.exactFrameCount > 0 && this.duration > 0
         ? this.exactFrameCount / this.duration
         : Math.max(0.001, Number(fps) || 30);
       this.presentedFrame = null;
+      this.decoderTimeOffset = 0;
       this.timedSeeksSinceRefresh = 0;
       this.closed = false;
       this.closeController = new AbortController();
@@ -361,8 +447,12 @@
     static async open(file, fps = 30, options = {}) {
       if (!(file instanceof Blob)) throw new Error("動画ファイルが選択されていません");
       if (options.signal?.aborted) throw abortedLoadError();
-      const objectUrl = URL.createObjectURL(file);
-      const timingPromise = mp4VideoTiming(file).catch(() => ({ frameCount: 0, timestamps: null }));
+      const timing = await withTimeout(mp4VideoTiming(file), MEDIA_LOAD_TIMEOUT_MS,
+        "動画の時刻情報を読み取れませんでした", options.signal);
+      const prepared = await withTimeout(prepareBrowserTimeline(file,timing), MEDIA_LOAD_TIMEOUT_MS,
+        "動画の時刻情報を準備できませんでした", options.signal);
+      if (options.signal?.aborted) throw abortedLoadError();
+      const objectUrl = URL.createObjectURL(prepared.file);
       const video = document.createElement("video");
       video.preload = "auto";
       video.muted = true;
@@ -396,11 +486,11 @@
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         options.onProgress?.("フレーム時刻を読み取っています");
-        const timing = await withTimeout(timingPromise, MEDIA_LOAD_TIMEOUT_MS,
-          "動画の時刻情報を読み込めませんでした。端末に保存した動画を選び直してください", options.signal);
         source = new BrowserFrameSource(file, objectUrl, video, canvas, fps, timing);
+        source.decoderTimeOffset = prepared.offset;
         await withTimeout(source.detectFps(), 2500, "動画のFPSを確認できませんでした", options.signal);
-        const initialMediaTime = source._mediaTimeForTimeline(initialPresentation?.mediaTime, 0);
+        const initialMediaTime = Number.isFinite(initialPresentation?.mediaTime)
+          ? initialPresentation.mediaTime + source.decoderTimeOffset : null;
         if (source.frameTimes?.length && Number.isFinite(initialMediaTime)
           && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
           && source.frameForMediaTime(initialMediaTime) === 0
@@ -570,21 +660,6 @@
       return low;
     }
 
-    _mediaTimeForTimeline(mediaTime, targetFrame = null) {
-      const value = Number(mediaTime);
-      if (!Number.isFinite(value)) return value;
-      if (this.browserMediaTimeOffset === null && Number.isFinite(Number(targetFrame))) {
-        const expected = this.timeForFrame(targetFrame);
-        const rawError = Math.abs(value - expected);
-        const shiftedError = Math.abs((value - this.mediaTimeOrigin) - expected);
-        if (rawError <= 0.000001) this.browserMediaTimeOffset = 0;
-        else if (Math.abs(this.mediaTimeOrigin) > 0.000001 && shiftedError <= 0.000001) {
-          this.browserMediaTimeOffset = this.mediaTimeOrigin;
-        }
-      }
-      return value - (this.browserMediaTimeOffset || 0);
-    }
-
     async _resetToFirstFrame() {
       if (this.closed) throw new Error("動画は閉じられています");
       this.video.pause();
@@ -637,8 +712,9 @@
       });
     }
 
-    _seekVideo(targetTime, timeoutMs = 2000) {
+    _seekVideo(targetTime, timeoutMs = 2000, signal) {
       const video = this.video;
+      this.presentedFrame = null;
       return new Promise((resolve, reject) => {
         let settled = false;
         const finish = (error) => {
@@ -648,6 +724,7 @@
           video.removeEventListener("seeked", onSeeked);
           video.removeEventListener("error", onError);
           this.closeController.signal.removeEventListener("abort", onAbort);
+          signal?.removeEventListener("abort", onAbort);
           if (error) reject(error);
           else resolve();
         };
@@ -658,8 +735,9 @@
         video.addEventListener("seeked", onSeeked, { once: true });
         video.addEventListener("error", onError, { once: true });
         this.closeController.signal.addEventListener("abort", onAbort, { once: true });
+        signal?.addEventListener("abort", onAbort, { once: true });
         try {
-          if (this.closed) onAbort();
+          if (this.closed || signal?.aborted) onAbort();
           else video.currentTime = targetTime;
         } catch (error) {
           finish(error instanceof Error ? error : new Error("動画フレームへ移動できませんでした"));
@@ -667,7 +745,7 @@
       });
     }
 
-    _waitForPresentationMetadata(timeoutMs = 2000) {
+    _waitForPresentationMetadata(timeoutMs = 2000, signal) {
       const video = this.video;
       if (typeof video.requestVideoFrameCallback !== "function") {
         return Promise.reject(new Error("このOSでは正確なフレーム照合を利用できません"));
@@ -680,6 +758,7 @@
           settled = true;
           clearTimeout(timeoutId);
           this.closeController.signal.removeEventListener("abort", onAbort);
+          signal?.removeEventListener("abort", onAbort);
           if (callbackId && video.cancelVideoFrameCallback) {
             video.cancelVideoFrameCallback(callbackId);
           }
@@ -692,6 +771,8 @@
           timeoutMs,
         );
         this.closeController.signal.addEventListener("abort", onAbort, { once: true });
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (this.closed || signal?.aborted) { onAbort(); return; }
         callbackId = video.requestVideoFrameCallback((_now, metadata) => finish(null, metadata));
       });
     }
@@ -700,14 +781,15 @@
       const target = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(frame) || 0)));
       const start = this.timeForFrame(target);
       const fallbackGap = 1 / Math.max(0.001, this.fps);
-      const following = target + 1 < this.frameCount() ? this.timeForFrame(target + 1) : this.duration;
+      const following = target + 1 < this.frameCount() ? this.timeForFrame(target + 1) : this.duration + this.decoderTimeOffset;
       const gap = following > start ? following - start : fallbackGap;
       const maximum = Math.max(0, this.duration - Math.min(0.000001, gap * 0.01));
-      return Math.max(0, Math.min(maximum, start + gap * fraction));
+      return Math.max(0, Math.min(maximum, start + gap * fraction - this.decoderTimeOffset));
     }
 
     async _replaceVideoDecoder() {
       if (this.closed) throw new Error("動画は閉じられています");
+      this.presentedFrame = null;
       const replacement = document.createElement("video");
       replacement.preload = "auto";
       replacement.muted = true;
@@ -754,21 +836,25 @@
 
       const observed = [];
       let lastError = null;
+      const attemptedTimes = new Set();
       for (const fraction of [0.5, 0.25, 0.75]) {
         if (this.closed) throw new Error("動画は閉じられています");
         const seekTime = this._timedSeekTarget(target, fraction);
+        if (attemptedTimes.has(seekTime)) continue;
+        attemptedTimes.add(seekTime);
+        const attempt = new AbortController();
         try {
           if (Math.abs(this.video.currentTime - seekTime) <= 0.0000001) {
             const nudge = this._timedSeekTarget(target, fraction === 0.5 ? 0.15 : 0.5);
             if (Math.abs(nudge - seekTime) > 0.0000001) await this._seekVideo(nudge);
           }
-          const presented = this._waitForPresentationMetadata();
-          const seeked = this._seekVideo(seekTime);
+          const presented = this._waitForPresentationMetadata(2000, attempt.signal);
+          const seeked = this._seekVideo(seekTime, 2000, attempt.signal);
           const [, metadata] = await Promise.all([seeked, presented]);
-          const rawMediaTime = Number(metadata?.mediaTime);
-          const mediaTime = this._mediaTimeForTimeline(rawMediaTime, target);
+          const mediaTime = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime + this.decoderTimeOffset : null;
           const actual = this.frameForMediaTime(mediaTime);
-          observed.push({ actual, mediaTime: rawMediaTime });
+          observed.push({ actual, mediaTime });
+          if (Number.isFinite(mediaTime) && mediaTime > this.timeForFrame(target) + 0.000001) break;
           if (actual === target) {
             // Nearest-frame lookup alone is not verification: if a malformed
             // timeline drops every other frame it can label an in-between
@@ -781,17 +867,65 @@
           }
         } catch (error) {
           lastError = error;
+        } finally {
+          attempt.abort();
         }
       }
       const details = observed
         .map((item) => `${item.actual}@${Number.isFinite(item.mediaTime) ? item.mediaTime.toFixed(6) : "?"}s`)
         .join(", ");
       const suffix = details ? `（実測 ${details}）` : `（${lastError?.message || "照合失敗"}）`;
+      // Some demuxers seek past the requested PTS at a GOP boundary. Decode
+      // forward from an earlier position and accept only the exact target PTS.
+      if (await this._playToTimedFrame(target)) return;
       if (allowDecoderRefresh) {
         await this._replaceVideoDecoder();
         return this._seekToTimedFrame(target, false);
       }
       throw new Error(`フレームID ${target}を正確にデコードできませんでした${suffix}`);
+    }
+
+    async _playToTimedFrame(target) {
+      const video = this.video;
+      if (typeof video.play !== "function" || this.closed) return false;
+      const targetTime = this.timeForFrame(target);
+      const previousTime = this.timeForFrame(Math.max(0, target - 1));
+      const gap = target > 0 ? targetTime - previousTime : 1 / this.fps;
+      const rate = Math.max(0.0625, Math.min(0.5, gap * 15));
+      const rewind = Math.min(rate, Math.max(0.15, this.timeForFrame(0) + gap * 2));
+      const start = Math.max(0, targetTime - rewind - this.decoderTimeOffset);
+      try { await this._seekVideo(start); } catch (_) { return false; }
+      return new Promise((resolve) => {
+        let settled = false;
+        let callbackId = null;
+        const originalRate = video.playbackRate;
+        const finish = (verified) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          this.closeController.signal.removeEventListener("abort", onAbort);
+          if (callbackId !== null) video.cancelVideoFrameCallback(callbackId);
+          video.pause();
+          video.playbackRate = originalRate;
+          this.presentedFrame = verified ? target : null;
+          resolve(verified);
+        };
+        const onAbort = () => finish(false);
+        const timer = setTimeout(() => finish(false), 4000);
+        const collect = (_now, metadata) => {
+          const time = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime + this.decoderTimeOffset : null;
+          if (!Number.isFinite(time) || time > targetTime + 0.000001) { finish(false); return; }
+          if (Math.abs(time - targetTime) <= 0.000001) { finish(true); return; }
+          callbackId = video.requestVideoFrameCallback(collect);
+        };
+        this.closeController.signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          if (this.closed) { finish(false); return; }
+          video.playbackRate = rate;
+          callbackId = video.requestVideoFrameCallback(collect);
+          Promise.resolve(video.play()).catch(() => finish(false));
+        } catch (_) { finish(false); }
+      });
     }
 
     async _seekToFrame(frame, timeSec) {
@@ -885,5 +1019,5 @@
     }
   }
 
-  global.VideoDigitizerFrames = { ApiFrameSource, BrowserFrameSource, exactMp4FrameCount, mp4VideoTiming };
+  global.VideoDigitizerFrames = { ApiFrameSource, BrowserFrameSource, exactMp4FrameCount, mp4VideoTiming, prepareBrowserTimeline };
 })(globalThis);
