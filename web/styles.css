@@ -1199,6 +1199,79 @@ button:hover,
   font-size: 13px;
 }
 
+.context-help {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--surface);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.context-help:hover,
+.context-help:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.multi-tab-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #d19a28;
+  background: #fff6df;
+  color: #60420b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.multi-tab-warning[hidden] {
+  display: none;
+}
+
+.multi-tab-warning button {
+  flex: 0 0 auto;
+}
+
+summary .context-help {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.reliability-table-wrap {
+  max-height: 320px;
+  margin-top: 10px;
+}
+
+.reliability-table {
+  min-width: 720px;
+}
+
+.reliability-table th,
+.reliability-table td {
+  padding: 6px 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.reliability-table th:first-child,
+.reliability-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+  text-align: left;
+}
+
 .small {
   margin-top: 6px;
   font-size: 13px;
@@ -1826,6 +1899,11 @@ td.calibration-cell {
     grid-template-columns: minmax(0, 1fr);
     gap: 6px;
     padding-inline: 10px;
+  }
+
+  .multi-tab-warning {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .mode-indicator {

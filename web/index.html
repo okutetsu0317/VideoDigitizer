@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-reliability1" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-reliability1" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-reliability1" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-reliability1" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-reliability2" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-reliability2" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-reliability2" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-reliability2" />
     <script src="./native-bridge.js?v=2.2.0-ios1"></script>
   </head>
   <body>
@@ -69,6 +69,7 @@
               <button id="setTrimStart" type="button">現在を開始</button>
               <label class="field-block">終了<input id="trimEndInput" type="number" min="0" step="1" value="0" /></label>
               <button id="setTrimEnd" type="button">現在を終了</button>
+              <a class="context-help" href="./help.html#range" target="_blank" rel="noopener noreferrer" title="範囲と送り幅の説明" aria-label="範囲と送り幅の説明を開く">?</a>
             </div>
           </details>
 
@@ -87,6 +88,7 @@
               <label class="field-block">点サイズ<input id="pointSize" type="number" min="2" max="16" step="1" value="6" /></label>
               <label class="field-block">線幅<input id="lineWidth" type="number" min="1" max="8" step="1" value="2" /></label>
               <label class="field-block color-field">点色<input id="manualPointColor" type="color" value="#d9531e" /></label>
+              <a class="context-help" href="./help.html#zoom" target="_blank" rel="noopener noreferrer" title="ズームと表示精度の説明" aria-label="ズームと表示精度の説明を開く">?</a>
             </div>
           </details>
 
@@ -116,6 +118,11 @@
           <a id="iosPrivacyLink" class="ios-privacy-link" href="./privacy.html" target="_blank" rel="noopener">プライバシー</a>
         </div>
         <div id="statusText">準備完了</div>
+      </section>
+
+      <section id="multiTabWarning" class="multi-tab-warning" role="alert" hidden>
+        <span>同じプロジェクトが別タブでも開かれています。自動保存と上書き保存を停止しました。</span>
+        <button id="saveProjectCopy" type="button">別コピーで保存</button>
       </section>
 
       <section class="infobar">
@@ -234,7 +241,7 @@
             </div>
 
             <details class="tool-section">
-              <summary>追跡・AI</summary>
+              <summary>追跡・AI <a class="context-help" href="./help.html#tracking" target="_blank" rel="noopener noreferrer" title="追跡機能の説明" aria-label="追跡機能の説明を開く">?</a></summary>
               <div class="tool-grid">
                 <button id="predictPoint" type="button">前10F線形予測</button>
                 <button id="trackNextPoint" type="button">次F画像追跡</button>
@@ -276,7 +283,7 @@
             </details>
 
             <details class="tool-section">
-              <summary>補間・派生点</summary>
+              <summary>補間・派生点 <a class="context-help" href="./help.html#copy-interpolate" target="_blank" rel="noopener noreferrer" title="補間とコピーの説明" aria-label="補間とコピーの説明を開く">?</a></summary>
               <div class="tool-grid">
                 <label class="field-block wide-control">補間方法
                   <select id="interpolationMethod"><option value="linear" selected>線形</option><option value="hold">前値保持</option><option value="nearest">近い点</option></select>
@@ -332,7 +339,7 @@
           </details>
 
           <details class="panel calibration-panel">
-            <summary>4点法 実長換算</summary>
+            <summary>4点法 実長換算 <a class="context-help" href="./help.html#calibration" target="_blank" rel="noopener noreferrer" title="4点法の説明" aria-label="4点法の説明を開く">?</a></summary>
             <div class="calibration-real-head">
               <label class="field-block">
                 有効化
@@ -872,7 +879,7 @@
         </section>
 
         <section class="panel analysis-panel comparison-panel">
-          <h2>比較・再測定</h2>
+          <div class="panel-title-row"><h2>比較・再測定</h2><a class="context-help" href="./help.html#analysis" target="_blank" rel="noopener noreferrer" title="分析画面の説明" aria-label="分析画面の説明を開く">?</a></div>
           <div class="mini-actions comparison-actions">
             <label class="file-button">比較動画<input id="comparisonVideoFile" type="file" accept="video/*" /></label>
             <label class="file-button">再測定JSON<input id="reliabilityProjectFile" type="file" accept="application/json,.json" /></label>
@@ -884,17 +891,20 @@
             <figure><img id="comparisonSecondaryImage" alt="比較動画" /><figcaption id="comparisonCaption">比較動画未選択</figcaption></figure>
           </div>
           <div id="reliabilityResult" class="quality-gate-result">再測定JSONを選択すると一致度を計算します</div>
+          <div class="table-wrap reliability-table-wrap">
+            <table id="reliabilityTable" class="reliability-table" aria-label="マーカー別の再測定比較"></table>
+          </div>
           <div class="analysis-subtitle"><h3>試技一覧</h3></div>
           <div id="trialList" class="trial-list"></div>
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-reliability1"></script>
-    <script src="./pwa.js?v=2.2.0-reliability1"></script>
-    <script src="./ai-pose.js?v=2.2.0-reliability1"></script>
-    <script src="./point-tracker.js?v=2.2.0-reliability1"></script>
-    <script src="./step-analysis-core.js?v=2.2.0-reliability1"></script>
-    <script src="./step-analysis.js?v=2.2.0-reliability1"></script>
-    <script src="./app.js?v=2.2.0-reliability1"></script>
+    <script src="./frame-source.js?v=2.2.0-reliability2"></script>
+    <script src="./pwa.js?v=2.2.0-reliability2"></script>
+    <script src="./ai-pose.js?v=2.2.0-reliability2"></script>
+    <script src="./point-tracker.js?v=2.2.0-reliability2"></script>
+    <script src="./step-analysis-core.js?v=2.2.0-reliability2"></script>
+    <script src="./step-analysis.js?v=2.2.0-reliability2"></script>
+    <script src="./app.js?v=2.2.0-reliability2"></script>
   </body>
 </html>

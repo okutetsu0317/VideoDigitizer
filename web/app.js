@@ -29,6 +29,9 @@ const DEFAULT_MARKERS = [
 const VIDEO_HASH_CHUNK_SIZE = 1024 * 1024;
 const PROJECT_SCHEMA = "fps_viewer_web_project_v1";
 const AUTOSAVE_KEY = "video_digitizer_autosave_v1";
+const TAB_PRESENCE_PREFIX = "video_digitizer_tab_presence_v1:";
+const TAB_HEARTBEAT_MS = 4_000;
+const TAB_STALE_MS = 12_000;
 const MAX_NATIVE_RECOVERY_BYTES = 64 * 1024 * 1024;
 const PROTOCOL_KEY = "video_digitizer_analysis_protocol_v1";
 const SUPPORTED_PROJECT_SCHEMAS = new Set([
@@ -191,6 +194,8 @@ const els = {
   markerInfo: $("markerInfo"),
   activeMarkerOverlay: $("activeMarkerOverlay"),
   statusText: $("statusText"),
+  multiTabWarning: $("multiTabWarning"),
+  saveProjectCopy: $("saveProjectCopy"),
   cursorInfo: $("cursorInfo"),
   pointInfo: $("pointInfo"),
   markerTemplate: $("markerTemplate"),
@@ -318,6 +323,7 @@ const els = {
   comparisonSecondaryImage: $("comparisonSecondaryImage"),
   comparisonCaption: $("comparisonCaption"),
   reliabilityResult: $("reliabilityResult"),
+  reliabilityTable: $("reliabilityTable"),
   trialList: $("trialList"),
   workspaceSideWidth: $("workspaceSideWidth"),
   workspaceDensity: $("workspaceDensity"),
@@ -415,6 +421,8 @@ const state = {
   videoInfoSnapshot: "",
   projectFileHandle: null,
   projectFileName: "",
+  projectIdentity: "",
+  tabConflict: false,
   videoIdentity: null,
   expectedVideoIdentity: null,
   activeView: "digitize",
@@ -569,6 +577,7 @@ function markDirty() {
   state.cloud.dirty = true;
   state.autosaveRevision += 1;
   updateStatus();
+  announceTabPresence();
 }
 
 function touchPoints() {
@@ -596,6 +605,88 @@ function recordAudit(action, details = {}) {
 function cleanDirty() {
   state.dirty = false;
   updateStatus();
+  announceTabPresence();
+}
+
+function projectCoordinationKey() {
+  if (state.projectIdentity) return state.projectIdentity;
+  const digest = String(state.videoIdentity?.digest || state.expectedVideoIdentity?.digest || "");
+  if (digest) return `video:${digest}`;
+  if (state.ready && state.videoName) {
+    return `video-meta:${state.videoName}:${Number(state.videoIdentity?.size) || 0}`;
+  }
+  return "";
+}
+
+function tabPresenceStorageKey(sessionId = state.sessionId) {
+  return `${TAB_PRESENCE_PREFIX}${sessionId}`;
+}
+
+function currentTabPresence() {
+  return {
+    session_id: state.sessionId,
+    project_key: projectCoordinationKey(),
+    dirty: state.dirty,
+    updated_at: Date.now(),
+  };
+}
+
+function updateTabConflict() {
+  const projectKey = projectCoordinationKey();
+  let conflict = false;
+  try {
+    const now = Date.now();
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(TAB_PRESENCE_PREFIX) || key === tabPresenceStorageKey()) continue;
+      let peer = null;
+      try {
+        peer = JSON.parse(localStorage.getItem(key) || "null");
+      } catch (_error) {
+        peer = null;
+      }
+      if (!peer || now - Number(peer.updated_at || 0) > TAB_STALE_MS) {
+        localStorage.removeItem(key);
+        continue;
+      }
+      if (projectKey && peer.project_key === projectKey) conflict = true;
+    }
+  } catch (_error) {
+    conflict = false;
+  }
+  state.tabConflict = conflict;
+  if (els.multiTabWarning) els.multiTabWarning.hidden = !conflict;
+  return conflict;
+}
+
+function announceTabPresence() {
+  try {
+    localStorage.setItem(tabPresenceStorageKey(), JSON.stringify(currentTabPresence()));
+  } catch (_error) {
+    // Storage may be unavailable in a private or restricted browser context.
+  }
+  updateTabConflict();
+}
+
+function removeTabPresence() {
+  try {
+    localStorage.removeItem(tabPresenceStorageKey());
+  } catch (_error) {
+    // Best effort only; stale entries expire after a short interval.
+  }
+}
+
+async function saveAsIndependentProjectCopy() {
+  state.cloud.projectId = createCloudProjectId();
+  state.cloud.generation = "";
+  state.cloud.conflict = false;
+  state.projectIdentity = `project:${state.cloud.projectId}`;
+  state.projectFileHandle = null;
+  state.projectFileName = "";
+  recordAudit("branch_project_copy", { project_id: state.cloud.projectId });
+  markDirty();
+  announceTabPresence();
+  await saveProjectAs();
 }
 
 function isEditableTarget(target) {
@@ -3823,7 +3914,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-reliability1", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-reliability2", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -4022,6 +4113,7 @@ function coordinatePairsFromProject(payload) {
       const current = getPoint(frame, marker);
       const other = points[String(frame)]?.[marker];
       if (!current || !other) continue;
+      if (![current.x, current.y, other.x, other.y].every((value) => Number.isFinite(Number(value)))) continue;
       pairs.push({ frame, marker, a: current, b: other, distance: Math.hypot(current.x - other.x, current.y - other.y) });
     }
   }
@@ -4050,6 +4142,34 @@ function icc31(pairs) {
   return Math.abs(denominator) < 1e-12 ? null : (msr - mse) / denominator;
 }
 
+function reliabilityAxisStats(pairs, axis) {
+  const differences = pairs
+    .map((pair) => Number(pair.a?.[axis]) - Number(pair.b?.[axis]))
+    .filter(Number.isFinite);
+  if (!differences.length) return null;
+  const squared = differences.reduce((sum, value) => sum + value ** 2, 0);
+  return {
+    bias: differences.reduce((sum, value) => sum + value, 0) / differences.length,
+    rmse: Math.sqrt(squared / differences.length),
+  };
+}
+
+function renderReliabilityByMarker(pairs) {
+  if (!els.reliabilityTable) return;
+  const groups = new Map(state.markers.map((marker) => [marker, []]));
+  for (const pair of pairs) {
+    if (!groups.has(pair.marker)) groups.set(pair.marker, []);
+    groups.get(pair.marker).push(pair);
+  }
+  const rows = [...groups.entries()].filter(([, items]) => items.length).map(([marker, items]) => {
+    const x = reliabilityAxisStats(items, "x");
+    const y = reliabilityAxisStats(items, "y");
+    const rmse2d = Math.sqrt(items.reduce((sum, pair) => sum + pair.distance ** 2, 0) / items.length);
+    return `<tr><td>${escapeHtml(marker)}</td><td>${items.length}</td><td>${x.bias.toFixed(3)}</td><td>${x.rmse.toFixed(3)}</td><td>${y.bias.toFixed(3)}</td><td>${y.rmse.toFixed(3)}</td><td>${rmse2d.toFixed(3)}</td></tr>`;
+  });
+  els.reliabilityTable.innerHTML = `<thead><tr><th>マーカー</th><th>N</th><th>X差平均</th><th>X RMSE</th><th>Y差平均</th><th>Y RMSE</th><th>2D RMSE</th></tr></thead><tbody>${rows.join("")}</tbody>`;
+}
+
 function compareReliabilityProject(file) {
   readFileText(file, "再測定プロジェクト").then((text) => {
     const payload = JSON.parse(text);
@@ -4062,11 +4182,13 @@ function compareReliabilityProject(file) {
     const maximum = Math.max(...pairs.map((pair) => pair.distance));
     const icc = icc31(pairs);
     els.reliabilityResult.className = "quality-gate-result pass";
-    els.reliabilityResult.textContent = `比較 ${pairs.length}点 / 平均差 ${mean.toFixed(3)}px / RMSE ${rmse.toFixed(3)}px / TEM ${tem.toFixed(3)}px / 最大 ${maximum.toFixed(3)}px / ICC(3,1) ${icc === null ? "-" : icc.toFixed(4)}`;
+    els.reliabilityResult.textContent = `一致した同一フレーム・同一マーカー ${pairs.length}点 / 2D平均差 ${mean.toFixed(3)}px / 2D RMSE ${rmse.toFixed(3)}px / TEM ${tem.toFixed(3)}px / 最大 ${maximum.toFixed(3)}px / ICC(3,1、X/Y統合) ${icc === null ? "-" : icc.toFixed(4)}`;
+    renderReliabilityByMarker(pairs);
     recordAudit("reliability_check", { file: file.name, count: pairs.length, mean, rmse, tem, icc });
   }).catch((error) => {
     els.reliabilityResult.className = "quality-gate-result warn";
     els.reliabilityResult.textContent = `比較失敗: ${error.message}`;
+    if (els.reliabilityTable) els.reliabilityTable.replaceChildren();
   }).finally(() => { els.reliabilityProjectFile.value = ""; });
 }
 
@@ -6889,6 +7011,7 @@ function autosaveRevisionKey() {
 
 async function performAutosave(options = {}) {
   if (!state.dirty && !state.ready && Object.keys(state.points).length === 0) return true;
+  if (updateTabConflict()) return false;
   const revisionKey = autosaveRevisionKey();
   if (!options.fullRecovery && revisionKey === lastAutosaveRevisionKey) return true;
   const text = autosaveJsonText();
@@ -6912,8 +7035,9 @@ async function performAutosave(options = {}) {
   const requiredDestinationsSaved = (!globalThis.VideoDigitizerStorage?.set || results[0])
     && (!IS_IOS_APP || !globalThis.VideoDigitizerNative?.saveRecovery || results[2]);
   if (requiredDestinationsSaved) lastAutosaveRevisionKey = revisionKey;
-  if (!saved) setStatus("自動保存に失敗しました。プロジェクトを共有シートから保存してください");
-  return saved;
+  const complete = saved && requiredDestinationsSaved;
+  if (!complete) setStatus("自動保存に失敗しました。プロジェクトを手動で保存してください");
+  return complete;
 }
 
 function writeAutosave(options = {}) {
@@ -7002,8 +7126,17 @@ function supportsFileSystemAccess() {
 
 async function writeProjectHandle(handle, text) {
   const writable = await handle.createWritable();
-  await writable.write(text);
-  await writable.close();
+  try {
+    await writable.write(text);
+    await writable.close();
+  } catch (error) {
+    try {
+      await writable.abort?.();
+    } catch (_abortError) {
+      // Preserve the original write error; createWritable commits only on close.
+    }
+    throw error;
+  }
 }
 
 async function saveProjectAs() {
@@ -7049,6 +7182,10 @@ async function saveProject() {
 
 async function overwriteProject() {
   try {
+    if (updateTabConflict()) {
+      setStatus("別タブでも同じプロジェクトを開いているため、上書き保存を停止しました");
+      return;
+    }
     if (!state.projectFileHandle) {
       if (!supportsFileSystemAccess()) {
         await saveProjectAs();
@@ -7351,6 +7488,11 @@ function loadProject(file) {
       if (/^[a-f0-9]{32}$/.test(String(savedCloud.project_id || ""))) {
         state.cloud.projectId = String(savedCloud.project_id);
       }
+      state.projectIdentity = /^[a-f0-9]{32}$/.test(String(savedCloud.project_id || ""))
+        ? `project:${savedCloud.project_id}`
+        : expectedVideoIdentity.digest
+          ? `video:${expectedVideoIdentity.digest}`
+          : `file:${file?.name || "project"}:${Number(file?.size) || 0}:${Number(file?.lastModified) || 0}`;
       state.cloud.generation = String(savedCloud.generation || "");
       state.cloud.lastSyncedAt = Number(savedCloud.last_synced_at || 0);
       state.cloud.enabled = savedCloud.enabled === true;
@@ -8006,6 +8148,9 @@ els.showTrunkMarkers.addEventListener("click", () => showMarkerGroup((group) => 
 els.showUpperMarkers.addEventListener("click", () => showMarkerGroup((group) => group.upper || group.trunk, "上肢"));
 els.showLowerMarkers.addEventListener("click", () => showMarkerGroup((group) => group.lower || group.trunk, "下肢"));
 els.saveProject.addEventListener("click", saveProject);
+els.saveProjectCopy.addEventListener("click", () => {
+  saveAsIndependentProjectCopy().catch((error) => setStatus(`別コピーを保存できませんでした: ${error.message}`));
+});
 els.saveProjectPackage.addEventListener("click", saveProjectPackage);
 els.overwriteProject.addEventListener("click", overwriteProject);
 els.exportCsv.addEventListener("click", exportCsv);
@@ -8211,7 +8356,13 @@ els.clearDerived.addEventListener("click", clearDerived);
 window.addEventListener("resize", draw);
 window.setInterval(writeAutosave, 60_000);
 window.setInterval(syncCloudDigitize, 5 * 60_000);
+window.setInterval(announceTabPresence, TAB_HEARTBEAT_MS);
 window.addEventListener("beforeunload", writeAutosave);
+window.addEventListener("pagehide", removeTabPresence);
+window.addEventListener("pageshow", announceTabPresence);
+window.addEventListener("storage", (event) => {
+  if (event.key?.startsWith(TAB_PRESENCE_PREFIX)) updateTabConflict();
+});
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden" && !IS_IOS_APP) writeAutosave();
 });
@@ -8402,6 +8553,7 @@ try {
   applyWorkspaceSettings({});
 }
 renderAll();
+announceTabPresence();
 if (IOS_STORAGE_ORIGIN_CHANGED) {
   setStatus("端末内保存領域を一時切替しました。復旧データを確認しています…");
   globalThis.setTimeout(() => restoreAutosave({ localOnly: true }), 250);
