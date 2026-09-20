@@ -86,6 +86,8 @@ const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
 const APP_VERSION = "2.2.0";
 const AI_SUGGESTION_VERSION = 1;
+const FRAME_LATENCY_SAMPLE_LIMIT = 200;
+const FRAME_SLIDER_DEBOUNCE_MS = 45;
 let autosaveQueue = Promise.resolve(true);
 let lastAutosaveRevisionKey = "";
 const HIGH_ACCURACY_AI_MODEL_ID = "google_deepmind_tapnextpp_512";
@@ -250,6 +252,7 @@ const els = {
   cancelJob: $("cancelJob"),
   table: $("pointTable"),
   calibEnabled: $("calibEnabled"),
+  calibRealConfirmed: $("calibRealConfirmed"),
   calibOverlayEnabled: $("calibOverlayEnabled"),
   calibUnit: $("calibUnit"),
   calibStatus: $("calibStatus"),
@@ -382,7 +385,9 @@ const state = {
   seeking: false,
   seekSerial: 0,
   activeDisplayFrame: null,
+  displayedFrame: null,
   pendingDisplayFrame: null,
+  pendingDisplayStartedAt: 0,
   frameCacheToken: 0,
   autosaveRevision: 0,
   videoLoadGeneration: 0,
@@ -390,6 +395,8 @@ const state = {
   frameCache: new Map(),
   frameRequests: new Map(),
   prefetchTimer: 0,
+  sliderSeekTimer: 0,
+  sliderSeekTarget: null,
   seekDirection: 1,
   trimInputTimer: 0,
   cursorDrawRequest: 0,
@@ -413,6 +420,14 @@ const state = {
   activeView: "digitize",
   analysisFrame: 0,
   analysisEvents: [],
+  analysisAggregateWorker: null,
+  analysisAggregateRequest: 0,
+  analysisAggregatePendingKey: "",
+  analysisAggregateResultKey: "",
+  analysisAggregateResult: null,
+  analysisAggregateWorkerDisabled: false,
+  analysisAggregateFailures: 0,
+  analysisAggregateStaleResults: 0,
   frameTimestamps: {},
   lens: {
     enabled: false,
@@ -443,6 +458,16 @@ const state = {
     conflict: false,
   },
   trackingConstraints: {},
+  framePerformance: {
+    displayLatencyMs: [],
+    displaySuccesses: 0,
+    displayFailures: 0,
+    cacheHits: 0,
+    cacheMisses: 0,
+    coalescedSeeks: 0,
+    sliderInputs: 0,
+    sliderSeeks: 0,
+  },
   skeletonSegments: SKELETON_SEGMENTS.map((segment) => segment.slice()),
   calibration: {
     fileName: "",
@@ -450,6 +475,7 @@ const state = {
     realPoints: DEFAULT_CALIBRATION_REAL_POINTS.map((point) => ({ ...point })),
     unit: "m",
     enabled: false,
+    realPointsConfirmed: false,
   },
 };
 
@@ -881,13 +907,17 @@ function readCalibrationSettings() {
   state.calibration.realPoints = readCalibrationRealPoints();
   state.calibration.unit = String(els.calibUnit?.value || "").trim() || "unit";
   state.calibration.enabled = Boolean(els.calibEnabled?.checked);
+  state.calibration.realPointsConfirmed = Boolean(els.calibRealConfirmed?.checked);
 }
 
 function writeCalibrationSettings(calibration = {}) {
   state.calibration.realPoints = normalizeRealCalibrationPoints(calibration.realPoints || calibration.real_points);
   state.calibration.unit = String(calibration.unit || "m");
   state.calibration.enabled = Boolean(calibration.enabled);
+  state.calibration.realPointsConfirmed = calibration.realPointsConfirmed === true
+    || calibration.real_points_confirmed === true;
   if (els.calibEnabled) els.calibEnabled.checked = state.calibration.enabled;
+  if (els.calibRealConfirmed) els.calibRealConfirmed.checked = state.calibration.realPointsConfirmed;
   if (els.calibUnit) els.calibUnit.value = state.calibration.unit;
   writeCalibrationRealPoints(state.calibration.realPoints);
 }
@@ -999,6 +1029,7 @@ function calibrationTransform() {
   readCalibrationSettings();
   readLensSettings();
   if (!state.calibration.enabled) return null;
+  if (!state.calibration.realPointsConfirmed) return null;
   if (!hasCalibrationPoints() || state.calibration.realPoints.length !== 4) return null;
   const matrix = [];
   const vector = [];
@@ -1157,7 +1188,9 @@ function updateStatus() {
   if (els.calibStatus) {
     els.calibStatus.textContent = hasCalibrationTransform()
       ? `実長換算: 有効 (${state.calibration.unit})`
-      : state.calibration.enabled ? "実長換算: 4点未設定" : "実長換算: 無効";
+      : state.calibration.enabled && !state.calibration.realPointsConfirmed
+        ? "実長換算: 実寸値の確認が必要"
+        : state.calibration.enabled ? "実長換算: 4点未設定" : "実長換算: 無効";
   }
   els.activeMarkerOverlay.textContent = state.activeMarker || "-";
   els.frameSlider.min = String(state.trimStart);
@@ -1880,6 +1913,10 @@ function recordPointAt(pos, options = {}) {
   if (!state.ready || !pos) return;
   if (state.seeking) {
     setStatus("フレーム移動中です");
+    return;
+  }
+  if (state.displayedFrame !== state.frame) {
+    setStatus("表示フレームを確認できないため記録しませんでした");
     return;
   }
   const recordedFrame = state.frame;
@@ -3493,23 +3530,28 @@ function renderKinematicsMetrics() {
   els.kinematicsResult.textContent = `${marker}: 速度 ${speedText} / 加速度 ${accelText} / 移動距離 ${pathText} / 最大速度 ${maxSpeedText}`;
 }
 
-function renderAnalysisSummary() {
+function renderAnalysisSummary(aggregate = null) {
   if (!els.analysisSummary) return;
-  const stats = digitizeStats();
-  const expected = Math.max(1, stats.frame_count_in_range * stats.marker_count);
-  const completion = stats.range_points / expected * 100;
-  const sourceCounts = stats.source_counts || {};
+  const stats = aggregate?.stats || digitizeStats();
+  const frameCount = stats.frameCount ?? stats.frame_count_in_range;
+  const markerCount = stats.markerCount ?? stats.marker_count;
+  const rangePoints = stats.rangePoints ?? stats.range_points;
+  const missingPoints = stats.missingRangePoints ?? stats.missing_range_points;
+  const completeFrames = stats.completeFrames ?? stats.complete_frames;
+  const sourceCounts = stats.sourceCounts || stats.source_counts || {};
+  const expected = Math.max(1, frameCount * markerCount);
+  const completion = rangePoints / expected * 100;
   const derived = Object.entries(sourceCounts)
     .filter(([source]) => source !== "manual")
     .reduce((sum, [, count]) => sum + Number(count || 0), 0);
   const rows = [
-    ["対象フレーム", `${state.trimStart}-${state.trimEnd} (${stats.frame_count_in_range}F)`],
+    ["対象フレーム", `${state.trimStart}-${state.trimEnd} (${frameCount}F)`],
     ["デジタイズFrame", String(state.frame)],
     ["分析Frame", String(state.analysisFrame)],
     ["入力率", `${completion.toFixed(1)}%`],
-    ["入力点", `${stats.range_points} / ${expected}`],
-    ["欠測点", String(stats.missing_range_points)],
-    ["完了フレーム", `${stats.complete_frames} / ${stats.frame_count_in_range}`],
+    ["入力点", `${rangePoints} / ${expected}`],
+    ["欠測点", String(missingPoints)],
+    ["完了フレーム", `${completeFrames} / ${frameCount}`],
     ["手入力点", String(sourceCounts.manual || 0)],
     ["補間/コピー等", String(derived)],
     ["イベント数", String(state.analysisEvents.length)],
@@ -3563,7 +3605,9 @@ function qualityGateIssues() {
   if (excluded > 0) issues.push({ severity: "info", text: `解析除外が ${excluded} 点あります` });
   const pendingAI = aiSuggestionCounts().pending;
   if (pendingAI > 0) issues.push({ severity: "info", text: `未確認のAI候補が ${pendingAI} 点あります` });
-  if (state.calibration.enabled && !calibrationTransform()) {
+  if (state.calibration.enabled && !state.calibration.realPointsConfirmed) {
+    issues.push({ severity: "error", text: "4点法の実寸値が確認済みになっていません" });
+  } else if (state.calibration.enabled && !calibrationTransform()) {
     issues.push({ severity: "error", text: "4点法が有効ですが変換を計算できません" });
   }
   const jumps = suspiciousJumps();
@@ -3580,23 +3624,23 @@ function runQualityGate() {
   return issues;
 }
 
-function renderQualityTable() {
+function renderQualityTable(aggregate = null) {
   if (!els.qualityTableBody) return;
   normalizeTrim();
-  const stats = digitizeStats();
-  const missingByMarker = state.markers
+  const stats = aggregate?.stats || digitizeStats();
+  const missingByMarker = aggregate?.missingByMarker || state.markers
     .map((marker) => ({ marker, runs: missingRunsForMarker(marker) }))
     .map((item) => ({ ...item, missing: item.runs.reduce((sum, run) => sum + run.count, 0) }))
     .filter((item) => item.missing > 0)
     .sort((a, b) => b.missing - a.missing);
-  const longestRun = missingByMarker
+  const longestRun = aggregate?.longestRun || missingByMarker
     .flatMap((item) => item.runs.map((run) => ({ marker: item.marker, ...run })))
     .sort((a, b) => b.count - a.count)[0];
-  const derived = Object.entries(stats.source_counts || {})
+  const derived = Object.entries(stats.sourceCounts || stats.source_counts || {})
     .filter(([source]) => source !== "manual")
     .reduce((sum, [, count]) => sum + Number(count || 0), 0);
-  const jumps = suspiciousJumps().slice(0, 3);
-  const sideIssues = sideCrossingIssues().slice(0, 3);
+  const jumps = aggregate?.jumps || suspiciousJumps().slice(0, 3);
+  const sideIssues = aggregate?.sideIssues || sideCrossingIssues().slice(0, 3);
   const rows = [
     ["欠測が多いマーカー", missingByMarker.slice(0, 3).map((item) => `${item.marker}:${item.missing}`).join(" / ") || "なし"],
     ["最長連続欠測", longestRun ? `${longestRun.marker} ${longestRun.start}-${longestRun.end} (${longestRun.count}F)` : "なし"],
@@ -3657,7 +3701,7 @@ function sideCrossingIssues() {
   return issues;
 }
 
-function renderMissingHeatmap() {
+function renderMissingHeatmap(aggregate = null) {
   if (!els.missingHeatmap) return;
   els.missingHeatmap.replaceChildren();
   normalizeTrim();
@@ -3666,10 +3710,11 @@ function renderMissingHeatmap() {
     return;
   }
   const frameTotal = trimFrameCount();
-  const cols = Math.min(80, frameTotal);
+  const cols = aggregate?.cols ?? Math.min(80, frameTotal);
   els.missingHeatmap.style.setProperty("--heatmap-cols", String(cols));
-  const shownMarkers = state.markers.slice(0, 28);
-  for (const marker of shownMarkers) {
+  const rows = aggregate?.heatmap || state.markers.slice(0, 28).map((marker) => ({ marker, cells: null }));
+  for (const item of rows) {
+    const marker = item.marker;
     const row = document.createElement("div");
     row.className = "missing-heatmap-row";
     const label = document.createElement("div");
@@ -3678,14 +3723,17 @@ function renderMissingHeatmap() {
     const cells = document.createElement("div");
     cells.className = "missing-heatmap-cells";
     for (let col = 0; col < cols; col += 1) {
-      const start = state.trimStart + Math.floor((col / cols) * frameTotal);
-      const end = state.trimStart + Math.floor(((col + 1) / cols) * frameTotal) - 1;
+      const cached = item.cells?.[col];
+      const start = cached?.start ?? state.trimStart + Math.floor((col / cols) * frameTotal);
+      const end = cached?.end ?? state.trimStart + Math.floor(((col + 1) / cols) * frameTotal) - 1;
       const safeEnd = Math.max(start, Math.min(state.trimEnd, end));
-      let missing = 0;
-      let total = 0;
-      for (let frame = start; frame <= safeEnd; frame += 1) {
-        total += 1;
-        if (!getPoint(frame, marker)) missing += 1;
+      let missing = cached?.missing ?? 0;
+      let total = cached?.total ?? 0;
+      if (!cached) {
+        for (let frame = start; frame <= safeEnd; frame += 1) {
+          total += 1;
+          if (!getPoint(frame, marker)) missing += 1;
+        }
       }
       const cell = document.createElement("span");
       cell.className = "missing-heatmap-cell";
@@ -3713,17 +3761,135 @@ function renderAnalysisFrameControls() {
   }
 }
 
+function analysisAggregateKey() {
+  return [
+    state.ready ? "1" : "0",
+    state.pointRevision,
+    state.trimStart,
+    state.trimEnd,
+    state.videoWidth,
+    state.videoHeight,
+    state.markers.join("\u001f"),
+  ].join("\u001e");
+}
+
+function analysisAggregatePayload() {
+  const markerIndexes = new Map(state.markers.map((marker, index) => [marker, index]));
+  const frames = new Map();
+  const frameEntry = (frame) => {
+    if (!frames.has(frame)) frames.set(frame, { frame, points: [], flags: [] });
+    return frames.get(frame);
+  };
+  for (const [frameKey, points] of Object.entries(state.points)) {
+    const frame = Number(frameKey);
+    if (!Number.isInteger(frame) || frame < state.trimStart || frame > state.trimEnd) continue;
+    for (const [marker, point] of Object.entries(points || {})) {
+      const markerIndex = markerIndexes.get(marker);
+      if (markerIndex === undefined || !Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
+      frameEntry(frame).points.push([markerIndex, Number(point.x), Number(point.y), String(point.src || "manual")]);
+    }
+  }
+  for (const [frameKey, flags] of Object.entries(state.pointFlags)) {
+    const frame = Number(frameKey);
+    if (!Number.isInteger(frame) || frame < state.trimStart || frame > state.trimEnd) continue;
+    for (const [marker, flag] of Object.entries(flags || {})) {
+      const markerIndex = markerIndexes.get(marker);
+      if (markerIndex === undefined || !flag?.status) continue;
+      frameEntry(frame).flags.push([markerIndex, String(flag.status)]);
+    }
+  }
+  return {
+    trimStart: state.trimStart,
+    trimEnd: state.trimEnd,
+    videoWidth: state.videoWidth,
+    videoHeight: state.videoHeight,
+    markers: state.markers.slice(),
+    frames: [...frames.values()].sort((a, b) => a.frame - b.frame),
+  };
+}
+
+function renderAnalysisAggregate(result) {
+  renderAnalysisSummary(result);
+  renderQualityTable(result);
+  renderMissingHeatmap(result);
+}
+
+function showAnalysisAggregatePending() {
+  if (els.analysisSummary) els.analysisSummary.textContent = "集計中…";
+  if (els.qualityTableBody) els.qualityTableBody.replaceChildren();
+  if (els.missingHeatmap) els.missingHeatmap.textContent = "欠測状況を集計しています…";
+}
+
+function ensureAnalysisAggregateWorker() {
+  if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
+  if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-reliability1", document.baseURI));
+  worker.onmessage = ({ data }) => {
+    if (data?.id !== state.analysisAggregateRequest) {
+      state.analysisAggregateStaleResults += 1;
+      return;
+    }
+    state.analysisAggregatePendingKey = "";
+    if (data.error) {
+      state.analysisAggregateFailures += 1;
+      state.analysisAggregateWorkerDisabled = true;
+      worker.terminate();
+      state.analysisAggregateWorker = null;
+      if (state.activeView === "analysis") renderAnalysisAggregate(null);
+      return;
+    }
+    if (data.key !== analysisAggregateKey()) {
+      state.analysisAggregateStaleResults += 1;
+      if (state.activeView === "analysis") requestAnalysisAggregate();
+      return;
+    }
+    state.analysisAggregateResultKey = data.key;
+    state.analysisAggregateResult = data.result;
+    if (state.activeView === "analysis") renderAnalysisAggregate(data.result);
+  };
+  worker.onerror = () => {
+    state.analysisAggregateFailures += 1;
+    state.analysisAggregateWorkerDisabled = true;
+    worker.terminate();
+    if (state.analysisAggregateWorker === worker) state.analysisAggregateWorker = null;
+    state.analysisAggregatePendingKey = "";
+    if (state.activeView === "analysis") renderAnalysisAggregate(null);
+  };
+  state.analysisAggregateWorker = worker;
+  return worker;
+}
+
+function requestAnalysisAggregate() {
+  const key = analysisAggregateKey();
+  if (!state.ready || trimFrameCount() <= 0) {
+    renderAnalysisAggregate(null);
+    return;
+  }
+  if (state.analysisAggregateResultKey === key && state.analysisAggregateResult) {
+    renderAnalysisAggregate(state.analysisAggregateResult);
+    return;
+  }
+  if (state.analysisAggregatePendingKey === key) return;
+  const worker = ensureAnalysisAggregateWorker();
+  if (!worker) {
+    renderAnalysisAggregate(null);
+    return;
+  }
+  const id = ++state.analysisAggregateRequest;
+  state.analysisAggregatePendingKey = key;
+  showAnalysisAggregatePending();
+  worker.postMessage({ id, key, payload: analysisAggregatePayload() });
+}
+
 function renderAnalysis() {
   renderAnalysisFrameControls();
-  renderAnalysisSummary();
-  renderQualityTable();
-  renderMissingHeatmap();
   renderAnalysisControls();
   renderAnalysisEvents();
   renderEventIntervals();
   renderAnalysisMetrics();
   renderComparison();
   renderTrialList();
+  requestAnalysisAggregate();
 }
 
 function comparisonSessionId() {
@@ -4389,12 +4555,17 @@ function frameUrl(frame) {
 function resetFrameCache() {
   state.frameCacheToken += 1;
   if (state.prefetchTimer) window.clearTimeout(state.prefetchTimer);
+  if (state.sliderSeekTimer) window.clearTimeout(state.sliderSeekTimer);
   state.prefetchTimer = 0;
+  state.sliderSeekTimer = 0;
+  state.sliderSeekTarget = null;
   for (const item of state.frameCache.values()) releaseFrameResource(item);
   state.frameCache.clear();
   state.frameRequests.clear();
   state.pendingDisplayFrame = null;
+  state.pendingDisplayStartedAt = 0;
   state.activeDisplayFrame = null;
+  state.displayedFrame = null;
   state.seeking = false;
 }
 
@@ -4417,6 +4588,24 @@ function clientFrameCacheLimit() {
   return limit;
 }
 
+function estimatedDecodedFrameBytes(image = null) {
+  const width = Number(image?.width) || state.videoWidth;
+  const height = Number(image?.height) || state.videoHeight;
+  return Math.max(1, width * height * 4);
+}
+
+function clientFrameCacheByteLimit() {
+  const memory = Number(navigator.deviceMemory) || 8;
+  const base = IS_IOS_APP ? 64 : memory <= 4 ? 64 : memory <= 8 ? 128 : 192;
+  return Math.max(estimatedDecodedFrameBytes(), base * 1024 * 1024);
+}
+
+function clientFrameCacheBytes() {
+  let total = 0;
+  for (const item of state.frameCache.values()) total += Number(item?.bytes) || 0;
+  return total;
+}
+
 function clientPrefetchRadius() {
   const pixels = Math.max(1, state.videoWidth * state.videoHeight);
   if (IS_IOS_APP) return 1;
@@ -4424,15 +4613,10 @@ function clientPrefetchRadius() {
 }
 
 function trimFrameCache() {
-  while (state.frameCache.size > clientFrameCacheLimit()) {
-    const first = state.frameCache.entries().next().value;
+  while (state.frameCache.size > clientFrameCacheLimit() || clientFrameCacheBytes() > clientFrameCacheByteLimit()) {
+    const first = [...state.frameCache.entries()].find(([frame]) => frame !== state.frame);
     if (!first) return;
     const [frame, item] = first;
-    if (frame === state.frame && state.frameCache.size > 1) {
-      state.frameCache.delete(frame);
-      state.frameCache.set(frame, item);
-      continue;
-    }
     releaseFrameResource(item);
     state.frameCache.delete(frame);
   }
@@ -4440,12 +4624,21 @@ function trimFrameCache() {
 
 function frameResourceFromBlob(blob) {
   if (typeof createImageBitmap === "function") {
-    return createImageBitmap(blob).then((image) => ({ image, bytes: blob.size }));
+    return createImageBitmap(blob).then((image) => ({
+      image,
+      bytes: estimatedDecodedFrameBytes(image),
+      transportBytes: blob.size,
+    }));
   }
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     const image = new Image();
-    image.onload = () => resolve({ image, url, bytes: blob.size });
+    image.onload = () => resolve({
+      image,
+      url,
+      bytes: estimatedDecodedFrameBytes(image),
+      transportBytes: blob.size,
+    });
     image.onerror = () => {
       URL.revokeObjectURL(url);
       reject(new Error("image decode failed"));
@@ -4457,13 +4650,18 @@ function frameResourceFromBlob(blob) {
 async function fetchFrameResource(frame, token = state.frameCacheToken) {
   const cached = state.frameCache.get(frame);
   if (cached) {
+    state.framePerformance.cacheHits += 1;
     state.frameCache.delete(frame);
     state.frameCache.set(frame, cached);
     return cached;
   }
 
   const pending = state.frameRequests.get(frame);
-  if (pending) return pending;
+  if (pending) {
+    state.framePerformance.cacheHits += 1;
+    return pending;
+  }
+  state.framePerformance.cacheMisses += 1;
 
   // Step-only iOS always uses the container timeline, never a legacy manual
   // digitizer timestamp table restored with an older project.
@@ -4472,7 +4670,11 @@ async function fetchFrameResource(frame, token = state.frameCacheToken) {
   let resourcePromise = null;
   if (state.frameSource?.getFrameImage) {
     const directImage = state.frameSource.getFrameImage(frame, timeSec);
-    if (directImage) resourcePromise = directImage.then((image) => ({ image, bytes: 0 }));
+    if (directImage) resourcePromise = directImage.then((image) => ({
+      image,
+      bytes: estimatedDecodedFrameBytes(image),
+      transportBytes: 0,
+    }));
   }
   if (!resourcePromise) {
     const frameBlob = state.frameSource
@@ -4506,7 +4708,7 @@ function loadFrameForDisplay(frame, token) {
   return fetchFrameResource(frame, token);
 }
 
-function paintFrameResource(resource) {
+function paintFrameResource(resource, frame) {
   const canvas = els.frameImage;
   if (!resource?.image || !(canvas instanceof HTMLCanvasElement)) return;
   if (canvas.width !== state.videoWidth) canvas.width = state.videoWidth;
@@ -4514,6 +4716,7 @@ function paintFrameResource(resource) {
   const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
   context.imageSmoothingEnabled = false;
   context.drawImage(resource.image, 0, 0, canvas.width, canvas.height);
+  state.displayedFrame = frame;
 }
 
 function prefetchAdjacentFrames(frame, token, serial) {
@@ -4541,15 +4744,35 @@ function prefetchAdjacentFrames(frame, token, serial) {
   }, browserDecoder ? 90 : 20);
 }
 
-function finishSeek(serial) {
-  if (serial !== state.seekSerial) return;
-  state.seeking = false;
-  state.activeDisplayFrame = null;
-  updateStatus();
+function frameLatencyPercentile(percentile) {
+  const values = state.framePerformance.displayLatencyMs;
+  if (!values.length) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * percentile) - 1));
+  return sorted[index];
+}
+
+function recordFrameDisplayLatency(startedAt) {
+  const elapsed = Math.max(0, performance.now() - startedAt);
+  state.framePerformance.displayLatencyMs.push(elapsed);
+  if (state.framePerformance.displayLatencyMs.length > FRAME_LATENCY_SAMPLE_LIMIT) {
+    state.framePerformance.displayLatencyMs.splice(
+      0,
+      state.framePerformance.displayLatencyMs.length - FRAME_LATENCY_SAMPLE_LIMIT,
+    );
+  }
+  state.framePerformance.displaySuccesses += 1;
+}
+
+function restoreLastDisplayedFrame() {
+  if (!Number.isInteger(state.displayedFrame)) return;
+  state.frame = clampFrame(state.displayedFrame);
+  state.selected = { frame: state.frame, marker: state.activeMarker };
+  renderTable();
   draw();
 }
 
-function startBrowserFrameSeek(frame) {
+function startFrameSeek(frame, startedAt = performance.now()) {
   const serial = ++state.seekSerial;
   const token = state.frameCacheToken;
   state.seeking = true;
@@ -4559,12 +4782,17 @@ function startBrowserFrameSeek(frame) {
   loadFrameForDisplay(frame, token).then((resource) => {
     if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
     const pending = state.pendingDisplayFrame;
+    const pendingStartedAt = state.pendingDisplayStartedAt;
     state.pendingDisplayFrame = null;
-    if (pending === null && state.frame === frame) paintFrameResource(resource);
+    state.pendingDisplayStartedAt = 0;
+    if (pending === null && state.frame === frame) {
+      paintFrameResource(resource, frame);
+      recordFrameDisplayLatency(startedAt);
+    }
     state.seeking = false;
     state.activeDisplayFrame = null;
     if (pending !== null && pending !== frame) {
-      startBrowserFrameSeek(pending);
+      startFrameSeek(pending, pendingStartedAt || performance.now());
       return;
     }
     if (state.frame === frame) {
@@ -4574,14 +4802,18 @@ function startBrowserFrameSeek(frame) {
     }
   }).catch(() => {
     if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
+    state.framePerformance.displayFailures += 1;
     const pending = state.pendingDisplayFrame;
+    const pendingStartedAt = state.pendingDisplayStartedAt;
     state.pendingDisplayFrame = null;
+    state.pendingDisplayStartedAt = 0;
     state.seeking = false;
     state.activeDisplayFrame = null;
     if (pending !== null && pending !== frame) {
-      startBrowserFrameSeek(pending);
+      startFrameSeek(pending, pendingStartedAt || performance.now());
       return;
     }
+    restoreLastDisplayedFrame();
     updateStatus();
     setStatus("フレーム画像の取得に失敗しました");
   });
@@ -4589,6 +4821,7 @@ function startBrowserFrameSeek(frame) {
 
 function seekFrame(frame) {
   if (!state.ready) return;
+  const requestedAt = performance.now();
   normalizeTrim();
   const previousFrame = state.frame;
   state.frame = clampFrame(frame);
@@ -4596,32 +4829,30 @@ function seekFrame(frame) {
   updateStatus();
   renderTable();
 
-  if (state.frameSource?.kind === "browser") {
-    if (state.seeking) {
-      state.pendingDisplayFrame = state.frame === state.activeDisplayFrame ? null : state.frame;
-      return;
-    }
-    startBrowserFrameSeek(state.frame);
+  if (state.seeking) {
+    state.pendingDisplayFrame = state.frame === state.activeDisplayFrame ? null : state.frame;
+    state.pendingDisplayStartedAt = state.pendingDisplayFrame === null ? 0 : requestedAt;
+    state.framePerformance.coalescedSeeks += 1;
     return;
   }
+  startFrameSeek(state.frame, requestedAt);
+}
 
-  const serial = ++state.seekSerial;
-  const token = state.frameCacheToken;
-  state.seeking = true;
-  state.activeDisplayFrame = state.frame;
-  updateStatus();
+function flushFrameSliderSeek() {
+  if (state.sliderSeekTimer) window.clearTimeout(state.sliderSeekTimer);
+  state.sliderSeekTimer = 0;
+  const target = state.sliderSeekTarget;
+  state.sliderSeekTarget = null;
+  if (!Number.isFinite(target)) return;
+  state.framePerformance.sliderSeeks += 1;
+  seekFrame(target);
+}
 
-  loadFrameForDisplay(state.frame, token).then((resource) => {
-    if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
-    paintFrameResource(resource);
-    finishSeek(serial);
-    prefetchAdjacentFrames(state.frame, token, serial);
-  }).catch(() => {
-    if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
-    state.seeking = false;
-    updateStatus();
-    setStatus("フレーム画像の取得に失敗しました");
-  });
+function scheduleFrameSliderSeek(frame) {
+  state.framePerformance.sliderInputs += 1;
+  state.sliderSeekTarget = frame;
+  if (state.sliderSeekTimer) window.clearTimeout(state.sliderSeekTimer);
+  state.sliderSeekTimer = window.setTimeout(flushFrameSliderSeek, FRAME_SLIDER_DEBOUNCE_MS);
 }
 
 function updateFrameModel() {
@@ -5997,6 +6228,7 @@ function digitizeSnapshot({ compact = false } = {}) {
       file_name: state.calibration.fileName,
       points: state.calibration.points,
       real_points: state.calibration.realPoints,
+      real_points_confirmed: state.calibration.realPointsConfirmed,
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       transform: transform ? { h: transform.h, unit: transform.unit } : null,
@@ -6056,6 +6288,7 @@ function projectPayload({ compact = false } = {}) {
       file_name: state.calibration.fileName,
       points: state.calibration.points,
       real_points: state.calibration.realPoints,
+      real_points_confirmed: state.calibration.realPointsConfirmed,
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       lens: state.lens,
@@ -6244,6 +6477,7 @@ function cloudDigitizePayload() {
         y: Number(point.y),
       })),
       real_points: state.calibration.realPoints.slice(0, 4).map((point) => ({ x: Number(point.x), y: Number(point.y) })),
+      real_points_confirmed: state.calibration.realPointsConfirmed,
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       lens: structuredClone(state.lens),
@@ -6306,9 +6540,27 @@ function diagnosticPayload() {
     performance: {
       frame_pipeline: frameDisplayMode(),
       client_cache_limit: clientFrameCacheLimit(),
+      client_cache_byte_limit: clientFrameCacheByteLimit(),
       client_cache_entries: state.frameCache.size,
+      client_cache_estimated_bytes: clientFrameCacheBytes(),
       pending_frame_requests: state.frameRequests.size,
       prefetch_radius: clientPrefetchRadius(),
+      displayed_frame: state.displayedFrame,
+      frame_display_samples: state.framePerformance.displayLatencyMs.length,
+      frame_display_p50_ms: frameLatencyPercentile(0.5),
+      frame_display_p95_ms: frameLatencyPercentile(0.95),
+      frame_display_max_ms: frameLatencyPercentile(1),
+      frame_display_successes: state.framePerformance.displaySuccesses,
+      frame_display_failures: state.framePerformance.displayFailures,
+      frame_cache_hits: state.framePerformance.cacheHits,
+      frame_cache_misses: state.framePerformance.cacheMisses,
+      coalesced_seek_requests: state.framePerformance.coalescedSeeks,
+      slider_inputs: state.framePerformance.sliderInputs,
+      slider_seeks: state.framePerformance.sliderSeeks,
+      analysis_aggregate_worker: state.analysisAggregateWorkerDisabled ? "fallback" : state.analysisAggregateWorker ? "active" : "idle",
+      analysis_aggregate_requests: state.analysisAggregateRequest,
+      analysis_aggregate_failures: state.analysisAggregateFailures,
+      analysis_aggregate_stale_results: state.analysisAggregateStaleResults,
     },
   };
 }
@@ -7176,6 +7428,8 @@ function loadProject(file) {
         fileName: String(savedCalibration.file_name || ""),
         points: normalizeCalibrationPoints(savedCalibration.points || [], savedCalibration.file_name || ""),
         realPoints: normalizeRealCalibrationPoints(savedCalibration.real_points || savedCalibration.realPoints),
+        realPointsConfirmed: savedCalibration.real_points_confirmed === true
+          || savedCalibration.realPointsConfirmed === true,
         unit: String(savedCalibration.unit || "m"),
         enabled: Boolean(savedCalibration.enabled),
       };
@@ -7713,7 +7967,8 @@ els.trimEndInput.addEventListener("keydown", (event) => {
 });
 els.setTrimStart.addEventListener("click", () => setTrim(state.frame, state.trimEnd));
 els.setTrimEnd.addEventListener("click", () => setTrim(state.trimStart, state.frame));
-els.frameSlider.addEventListener("input", () => seekFrame(Number(els.frameSlider.value)));
+els.frameSlider.addEventListener("input", () => scheduleFrameSliderSeek(Number(els.frameSlider.value)));
+els.frameSlider.addEventListener("change", flushFrameSliderSeek);
 els.prevFrame.addEventListener("click", () => seekFrame(frameByStep(state.frame, -1)));
 els.nextFrame.addEventListener("click", () => seekFrame(frameByStep(state.frame, 1)));
 els.analysisFrameSlider.addEventListener("input", () => setAnalysisFrame(Number(els.analysisFrameSlider.value), { status: false }));
@@ -7856,6 +8111,7 @@ for (const [, id] of METADATA_FIELDS) {
 for (let index = 1; index <= 4; index += 1) {
   for (const axis of ["X", "Y"]) {
     els[`calibReal${axis}${index}`].addEventListener("change", () => {
+      els.calibRealConfirmed.checked = false;
       readCalibrationSettings();
       state.tableSnapshot = "";
       markDirty();
@@ -7864,6 +8120,7 @@ for (let index = 1; index <= 4; index += 1) {
       draw();
     });
     els[`calibReal${axis}${index}`].addEventListener("input", () => {
+      els.calibRealConfirmed.checked = false;
       readCalibrationSettings();
       updateStatus();
       renderTable();
@@ -7871,6 +8128,22 @@ for (let index = 1; index <= 4; index += 1) {
     });
   }
 }
+els.calibRealConfirmed.addEventListener("change", () => {
+  if (els.calibRealConfirmed.checked) {
+    const points = readCalibrationRealPoints();
+    const unit = String(els.calibUnit.value || "").trim() || "unit";
+    const summary = points.map((point, index) => `P${index + 1} (${point.x}, ${point.y})`).join(" / ");
+    if (points.length !== 4 || !confirm(`4点法の実寸値を確認してください。\n${summary} ${unit}\n\n仮の値ではなく、実際の較正枠の座標ですか？`)) {
+      els.calibRealConfirmed.checked = false;
+    }
+  }
+  readCalibrationSettings();
+  state.tableSnapshot = "";
+  markDirty();
+  updateStatus();
+  renderTable();
+  draw();
+});
 els.calibEnabled.addEventListener("change", () => {
   readCalibrationSettings();
   state.tableSnapshot = "";
@@ -7880,6 +8153,7 @@ els.calibEnabled.addEventListener("change", () => {
   draw();
 });
 els.calibUnit.addEventListener("change", () => {
+  els.calibRealConfirmed.checked = false;
   readCalibrationSettings();
   state.tableSnapshot = "";
   markDirty();
@@ -7888,6 +8162,7 @@ els.calibUnit.addEventListener("change", () => {
   draw();
 });
 els.calibUnit.addEventListener("input", () => {
+  els.calibRealConfirmed.checked = false;
   readCalibrationSettings();
   updateStatus();
   renderTable();
