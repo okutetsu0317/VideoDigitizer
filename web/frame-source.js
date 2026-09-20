@@ -1,22 +1,71 @@
 (function initFrameSources(global) {
   "use strict";
 
-  function waitForEvent(target, successEvent, errorEvent = "error") {
+  const MEDIA_LOAD_TIMEOUT_MS = 15000;
+
+  function abortedLoadError() {
+    const error = new Error("動画の読み込みをキャンセルしました");
+    error.name = "AbortError";
+    return error;
+  }
+
+  function waitForEvent(target, successEvent, errorEvent = "error", options = {}) {
     return new Promise((resolve, reject) => {
+      let settled = false;
       const cleanup = () => {
+        clearTimeout(timeoutId);
         target.removeEventListener(successEvent, onSuccess);
         target.removeEventListener(errorEvent, onError);
+        options.signal?.removeEventListener("abort", onAbort);
       };
       const onSuccess = () => {
+        if (settled) return;
+        settled = true;
         cleanup();
         resolve();
       };
-      const onError = () => {
+      const onError = (error) => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        reject(new Error("動画をブラウザでデコードできませんでした"));
+        reject(error instanceof Error ? error : new Error("動画をブラウザでデコードできませんでした"));
       };
+      const onAbort = () => onError(abortedLoadError());
+      const timeoutId = setTimeout(
+        () => onError(new Error("動画の読み込みがタイムアウトしました。端末に保存した短い動画を選び直してください")),
+        options.timeoutMs || MEDIA_LOAD_TIMEOUT_MS,
+      );
       target.addEventListener(successEvent, onSuccess, { once: true });
       target.addEventListener(errorEvent, onError, { once: true });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      // Subscribe before load/currentTime changes; a local Blob can become ready
+      // before the next listener would otherwise have been registered.
+      try {
+        if (options.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        options.start?.();
+        if (target.error) onError();
+        else if (options.isReady?.()) onSuccess();
+      } catch (error) {
+        onError(error);
+      }
+    });
+  }
+
+  function withTimeout(promise, timeoutMs, message, signal) {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const fail = (error) => { cleanup(); reject(error); };
+      const onAbort = () => fail(abortedLoadError());
+      const timeoutId = setTimeout(() => fail(new Error(message)), timeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      Promise.resolve(promise).then((value) => { cleanup(); resolve(value); }, fail);
+      if (signal?.aborted) onAbort();
     });
   }
 
@@ -33,6 +82,8 @@
 
   const MAX_MP4_METADATA_BYTES = 64 * 1024 * 1024;
   const MAX_MP4_TIMING_SAMPLES = 2_000_000;
+  const MAX_TIMED_SEEKS_PER_DECODER = 48;
+  const UNKNOWN_TIMING_PRESENTATION_TIMEOUT_MS = 120;
 
   function fourcc(view, offset) {
     if (offset < 0 || offset + 4 > view.byteLength) return "";
@@ -114,7 +165,7 @@
     return offset + 4 <= box.end ? view.getUint32(offset) : 0;
   }
 
-  function samplePresentationTicks(view, stbl, sampleCount) {
+  function samplePresentationTicks(view, stbl, sampleCount, quickTime = false) {
     if (sampleCount <= 0 || sampleCount > MAX_MP4_TIMING_SAMPLES) return null;
     const stts = firstChild(view, stbl, "stts");
     if (!stts || stts.dataStart + 8 > stts.end) return null;
@@ -147,7 +198,11 @@
     offset = ctts.dataStart + 8;
     for (let entry = 0; entry < cttsEntryCount; entry += 1, offset += 8) {
       const count = view.getUint32(offset);
-      const compositionOffset = cttsVersion === 1 ? view.getInt32(offset + 4) : view.getUint32(offset + 4);
+      // QuickTime ctts permits signed composition deltas even at version 0.
+      // ISO-BMFF/MP4 version 0 remains unsigned; do not infer the format from
+      // a .MOV filename or silently discard its negative-offset B frames.
+      const compositionOffset = cttsVersion === 1 || quickTime
+        ? view.getInt32(offset + 4) : view.getUint32(offset + 4);
       if (!count || sample + count > sampleCount) return null;
       for (let index = 0; index < count; index += 1) {
         ticks[sample] += compositionOffset;
@@ -206,7 +261,7 @@
     return Float64Array.from(result.filter((value) => Number.isFinite(value) && value >= 0));
   }
 
-  function videoTrackTiming(view, trak, movieTimeScale) {
+  function videoTrackTiming(view, trak, movieTimeScale, quickTime = false) {
     const mdia = firstChild(view, trak, "mdia");
     const hdlr = mdia && firstChild(view, mdia, "hdlr");
     if (!hdlr || hdlr.dataStart + 12 > hdlr.end || fourcc(view, hdlr.dataStart + 8) !== "vide") return null;
@@ -218,7 +273,7 @@
     const sampleSize = firstChild(view, stbl, "stsz") || firstChild(view, stbl, "stz2");
     if (!sampleSize || sampleSize.dataStart + 12 > sampleSize.end) return null;
     const sampleCount = view.getUint32(sampleSize.dataStart + 8);
-    const ticks = samplePresentationTicks(view, stbl, sampleCount);
+    const ticks = samplePresentationTicks(view, stbl, sampleCount, quickTime);
     const timestamps = presentationTimeline(
       ticks,
       trackTimeScale,
@@ -237,13 +292,19 @@
     if (!moov || moov.size - moov.headerSize > MAX_MP4_METADATA_BYTES) {
       return { frameCount: 0, timestamps: null };
     }
+    const ftyp = await topLevelBox(file, "ftyp");
+    let quickTime = false;
+    if (ftyp && ftyp.size >= ftyp.headerSize + 4) {
+      const brand = await file.slice(ftyp.offset + ftyp.headerSize, ftyp.offset + ftyp.headerSize + 4).arrayBuffer();
+      quickTime = fourcc(new DataView(brand), 0) === "qt  ";
+    }
     const buffer = await file.slice(moov.offset + moov.headerSize, moov.offset + moov.size).arrayBuffer();
     const view = new DataView(buffer);
     const root = { dataStart: 0, end: view.byteLength };
     const movieTimeScale = mediaTimeScale(view, firstChild(view, root, "mvhd"));
     let best = { frameCount: 0, timestamps: null };
     for (const trak of childBoxes(view, root.dataStart, root.end).filter((box) => box.type === "trak")) {
-      const timing = videoTrackTiming(view, trak, movieTimeScale);
+      const timing = videoTrackTiming(view, trak, movieTimeScale, quickTime);
       if (timing && timing.frameCount > best.frameCount) best = timing;
     }
     return best;
@@ -283,12 +344,15 @@
         ? this.exactFrameCount / this.duration
         : Math.max(0.001, Number(fps) || 30);
       this.presentedFrame = null;
+      this.timedSeeksSinceRefresh = 0;
       this.closed = false;
+      this.closeController = new AbortController();
       this.queue = Promise.resolve();
     }
 
-    static async open(file, fps = 30) {
+    static async open(file, fps = 30, options = {}) {
       if (!(file instanceof Blob)) throw new Error("動画ファイルが選択されていません");
+      if (options.signal?.aborted) throw abortedLoadError();
       const objectUrl = URL.createObjectURL(file);
       const timingPromise = mp4VideoTiming(file).catch(() => ({ frameCount: 0, timestamps: null }));
       const video = document.createElement("video");
@@ -296,11 +360,26 @@
       video.muted = true;
       video.playsInline = true;
       video.disablePictureInPicture = true;
-      video.src = objectUrl;
+      let initialPresentation = null;
+      let initialCallbackId = null;
+      let source = null;
       try {
+        options.onProgress?.("動画の情報を確認しています");
+        // On WebKit the first decoded frame may be presented during load().
+        // Capture its real timestamp instead of missing it and forcing a seek.
+        if (typeof video.requestVideoFrameCallback === "function") {
+          initialCallbackId = video.requestVideoFrameCallback((_now, metadata) => {
+            initialPresentation = metadata;
+            initialCallbackId = null;
+          });
+        }
+        video.src = objectUrl;
         if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
-          video.load();
-          await waitForEvent(video, "loadedmetadata");
+          await waitForEvent(video, "loadedmetadata", "error", {
+            start: () => video.load(),
+            isReady: () => video.readyState >= HTMLMediaElement.HAVE_METADATA,
+            signal: options.signal,
+          });
         }
         if (!video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) {
           throw new Error("動画の解像度または再生時間を取得できませんでした");
@@ -308,18 +387,34 @@
         const canvas = document.createElement("canvas");
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        const source = new BrowserFrameSource(file, objectUrl, video, canvas, fps, await timingPromise);
-        await source.detectFps();
-        await source._resetToFirstFrame();
+        options.onProgress?.("フレーム時刻を読み取っています");
+        const timing = await withTimeout(timingPromise, MEDIA_LOAD_TIMEOUT_MS,
+          "動画の時刻情報を読み込めませんでした。端末に保存した動画を選び直してください", options.signal);
+        source = new BrowserFrameSource(file, objectUrl, video, canvas, fps, timing);
+        await withTimeout(source.detectFps(), 2500, "動画のFPSを確認できませんでした", options.signal);
+        if (source.frameTimes?.length && Number.isFinite(initialPresentation?.mediaTime)
+          && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+          && source.frameForMediaTime(initialPresentation.mediaTime) === 0
+          && Math.abs(initialPresentation.mediaTime - source.timeForFrame(0)) < 0.000001) {
+          source.presentedFrame = 0;
+        }
+        options.onProgress?.("最初のフレームを確認しています");
+        await withTimeout(source._resetToFirstFrame(), MEDIA_LOAD_TIMEOUT_MS,
+          "最初のフレームを確認できませんでした。動画を選び直してください", options.signal);
         return {
           source,
           metadata: source.metadata(file.name),
         };
       } catch (error) {
-        video.removeAttribute("src");
-        video.load();
-        URL.revokeObjectURL(objectUrl);
+        if (source) source.close();
+        else {
+          video.removeAttribute("src");
+          video.load();
+          URL.revokeObjectURL(objectUrl);
+        }
         throw error;
+      } finally {
+        if (initialCallbackId !== null) video.cancelVideoFrameCallback?.(initialCallbackId);
       }
     }
 
@@ -367,15 +462,19 @@
       let callbackId = 0;
       let timeoutId = 0;
       let finished = false;
+      let finishSampling = () => {};
       const completed = new Promise((resolve) => {
         const finish = () => {
           if (finished) return;
           finished = true;
           if (callbackId && this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(callbackId);
           clearTimeout(timeoutId);
+          this.closeController.signal.removeEventListener("abort", finish);
           resolve();
         };
+        finishSampling = finish;
         const collect = (_now, metadata) => {
+          if (finished) return;
           const mediaTime = Number(metadata?.mediaTime);
           if (Number.isFinite(mediaTime) && (mediaTimes.length === 0 || mediaTime > mediaTimes.at(-1))) {
             mediaTimes.push(mediaTime);
@@ -385,12 +484,16 @@
         };
         callbackId = this.video.requestVideoFrameCallback(collect);
         timeoutId = setTimeout(finish, 1500);
+        this.closeController.signal.addEventListener("abort", finish, { once: true });
       });
       try {
         this.video.currentTime = 0;
-        await this.video.play();
+        // play() may stay pending while iOS prepares media. The sampling timer
+        // must remain authoritative even when that promise never settles.
+        Promise.resolve(this.video.play()).catch(() => finishSampling());
       } catch (_error) {
         // Keep the user-provided FPS when muted playback is restricted.
+        finishSampling();
       }
       await completed;
       this.video.pause();
@@ -461,13 +564,18 @@
     async _resetToFirstFrame() {
       if (this.closed) throw new Error("動画は閉じられています");
       this.video.pause();
+      if (this.frameTimes?.length) {
+        await this._seekToTimedFrame(0);
+        return;
+      }
       if (Math.abs(this.video.currentTime) > 0.0001) {
-        const seeked = waitForEvent(this.video, "seeked");
-        this.video.currentTime = 0;
-        await seeked;
+        await this._seekVideo(0);
       }
       if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        await waitForEvent(this.video, "loadeddata");
+        await waitForEvent(this.video, "loadeddata", "error", {
+          isReady: () => this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA,
+          signal: this.closeController.signal,
+        });
       }
       if (typeof this.video.requestVideoFrameCallback !== "function") {
         this.presentedFrame = 0;
@@ -481,6 +589,7 @@
     }
 
     _playUntilNextPresentation() {
+      const video = this.video;
       return new Promise((resolve, reject) => {
         let settled = false;
         let callbackId = 0;
@@ -488,64 +597,183 @@
           if (settled) return;
           settled = true;
           clearTimeout(timeoutId);
-          this.video.pause();
-          if (callbackId && this.video.cancelVideoFrameCallback) {
-            this.video.cancelVideoFrameCallback(callbackId);
+          this.closeController.signal.removeEventListener("abort", onAbort);
+          video.pause();
+          if (callbackId && video.cancelVideoFrameCallback) {
+            video.cancelVideoFrameCallback(callbackId);
           }
           if (error) reject(error);
           else resolve(metadata);
         };
+        const onAbort = () => finish(abortedLoadError());
         const timeoutId = setTimeout(() => finish(new Error("次の動画フレームを表示できませんでした")), 2000);
-        callbackId = this.video.requestVideoFrameCallback((_now, metadata) => finish(null, metadata));
-        this.video.play().catch((error) => finish(error));
+        this.closeController.signal.addEventListener("abort", onAbort, { once: true });
+        callbackId = video.requestVideoFrameCallback((_now, metadata) => finish(null, metadata));
+        Promise.resolve(video.play()).catch((error) => finish(error));
       });
     }
 
-    _playToFrame(targetFrame) {
-      const target = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(targetFrame) || 0)));
-      if (this.presentedFrame === target) return Promise.resolve();
+    _seekVideo(targetTime, timeoutMs = 2000) {
+      const video = this.video;
       return new Promise((resolve, reject) => {
         let settled = false;
-        let callbackId = 0;
-        const startFrame = Math.max(0, Number(this.presentedFrame) || 0);
-        const expectedMs = ((target - startFrame + 2) / Math.max(1, this.fps)) * 1000;
         const finish = (error) => {
           if (settled) return;
           settled = true;
           clearTimeout(timeoutId);
-          this.video.pause();
-          if (callbackId && this.video.cancelVideoFrameCallback) {
-            this.video.cancelVideoFrameCallback(callbackId);
-          }
+          video.removeEventListener("seeked", onSeeked);
+          video.removeEventListener("error", onError);
+          this.closeController.signal.removeEventListener("abort", onAbort);
           if (error) reject(error);
           else resolve();
         };
-        const onFrame = (_now, metadata) => {
-          const frame = this.frameForMediaTime(metadata?.mediaTime);
-          if (Number.isFinite(frame) && frame > this.presentedFrame) this.presentedFrame = frame;
-          if (this.presentedFrame >= target) {
-            finish();
+        const onSeeked = () => finish();
+        const onError = () => finish(new Error("動画フレームへ移動できませんでした"));
+        const onAbort = () => finish(abortedLoadError());
+        const timeoutId = setTimeout(() => finish(new Error("動画フレームへの移動がタイムアウトしました")), timeoutMs);
+        video.addEventListener("seeked", onSeeked, { once: true });
+        video.addEventListener("error", onError, { once: true });
+        this.closeController.signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          if (this.closed) onAbort();
+          else video.currentTime = targetTime;
+        } catch (error) {
+          finish(error instanceof Error ? error : new Error("動画フレームへ移動できませんでした"));
+        }
+      });
+    }
+
+    _waitForPresentationMetadata(timeoutMs = 2000) {
+      const video = this.video;
+      if (typeof video.requestVideoFrameCallback !== "function") {
+        return Promise.reject(new Error("このOSでは正確なフレーム照合を利用できません"));
+      }
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        let callbackId = 0;
+        const finish = (error, metadata) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          this.closeController.signal.removeEventListener("abort", onAbort);
+          if (callbackId && video.cancelVideoFrameCallback) {
+            video.cancelVideoFrameCallback(callbackId);
+          }
+          if (error) reject(error);
+          else resolve(metadata);
+        };
+        const onAbort = () => finish(abortedLoadError());
+        const timeoutId = setTimeout(
+          () => finish(new Error("デコードしたフレームを照合できませんでした")),
+          timeoutMs,
+        );
+        this.closeController.signal.addEventListener("abort", onAbort, { once: true });
+        callbackId = video.requestVideoFrameCallback((_now, metadata) => finish(null, metadata));
+      });
+    }
+
+    _timedSeekTarget(frame, fraction) {
+      const target = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(frame) || 0)));
+      const start = this.timeForFrame(target);
+      const fallbackGap = 1 / Math.max(0.001, this.fps);
+      const following = target + 1 < this.frameCount() ? this.timeForFrame(target + 1) : this.duration;
+      const gap = following > start ? following - start : fallbackGap;
+      const maximum = Math.max(0, this.duration - Math.min(0.000001, gap * 0.01));
+      return Math.max(0, Math.min(maximum, start + gap * fraction));
+    }
+
+    async _replaceVideoDecoder() {
+      if (this.closed) throw new Error("動画は閉じられています");
+      const replacement = document.createElement("video");
+      replacement.preload = "auto";
+      replacement.muted = true;
+      replacement.playsInline = true;
+      replacement.disablePictureInPicture = true;
+      replacement.src = this.objectUrl;
+      try {
+        if (replacement.readyState < HTMLMediaElement.HAVE_METADATA) {
+          await waitForEvent(replacement, "loadedmetadata", "error", {
+            start: () => replacement.load(),
+            isReady: () => replacement.readyState >= HTMLMediaElement.HAVE_METADATA,
+            signal: this.closeController.signal,
+          });
+        }
+        if (!replacement.videoWidth || !replacement.videoHeight || !Number.isFinite(replacement.duration)) {
+          throw new Error("動画デコーダーを再準備できませんでした");
+        }
+        if (this.closed) throw new Error("動画は閉じられています");
+      } catch (error) {
+        replacement.removeAttribute("src");
+        replacement.load();
+        throw error;
+      }
+
+      const previous = this.video;
+      this.video = replacement;
+      this.duration = Number(replacement.duration) || this.duration;
+      this.presentedFrame = null;
+      this.timedSeeksSinceRefresh = 0;
+      previous.pause();
+      previous.removeAttribute("src");
+      previous.load();
+    }
+
+    async _seekToTimedFrame(targetFrame, allowDecoderRefresh = true) {
+      const target = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(targetFrame) || 0)));
+      if (this.presentedFrame === target) return;
+      if (typeof this.video.requestVideoFrameCallback !== "function") {
+        throw new Error("このOSではコンテナ時刻と表示フレームを照合できません");
+      }
+      if (this.timedSeeksSinceRefresh >= MAX_TIMED_SEEKS_PER_DECODER) {
+        await this._replaceVideoDecoder();
+      }
+
+      const observed = [];
+      let lastError = null;
+      for (const fraction of [0.5, 0.25, 0.75]) {
+        if (this.closed) throw new Error("動画は閉じられています");
+        const seekTime = this._timedSeekTarget(target, fraction);
+        try {
+          if (Math.abs(this.video.currentTime - seekTime) <= 0.0000001) {
+            const nudge = this._timedSeekTarget(target, fraction === 0.5 ? 0.15 : 0.5);
+            if (Math.abs(nudge - seekTime) > 0.0000001) await this._seekVideo(nudge);
+          }
+          const presented = this._waitForPresentationMetadata();
+          const seeked = this._seekVideo(seekTime);
+          const [, metadata] = await Promise.all([seeked, presented]);
+          const mediaTime = Number(metadata?.mediaTime);
+          const actual = this.frameForMediaTime(mediaTime);
+          observed.push({ actual, mediaTime });
+          if (actual === target) {
+            // Nearest-frame lookup alone is not verification: if a malformed
+            // timeline drops every other frame it can label an in-between
+            // decoded frame as the requested one. Require its real PTS too.
+            if (!Number.isFinite(metadata?.mediaTime)
+              || Math.abs(mediaTime - this.timeForFrame(target)) > 0.000001) continue;
+            this.presentedFrame = actual;
+            this.timedSeeksSinceRefresh += 1;
             return;
           }
-          callbackId = this.video.requestVideoFrameCallback(onFrame);
-        };
-        const timeoutId = setTimeout(
-          () => finish(new Error(`フレームID ${target} まで連続デコードできませんでした`)),
-          Math.max(2000, expectedMs * 3),
-        );
-        callbackId = this.video.requestVideoFrameCallback(onFrame);
-        this.video.playbackRate = 1;
-        this.video.play().catch((error) => finish(error));
-      });
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      const details = observed
+        .map((item) => `${item.actual}@${Number.isFinite(item.mediaTime) ? item.mediaTime.toFixed(6) : "?"}s`)
+        .join(", ");
+      const suffix = details ? `（実測 ${details}）` : `（${lastError?.message || "照合失敗"}）`;
+      if (allowDecoderRefresh) {
+        await this._replaceVideoDecoder();
+        return this._seekToTimedFrame(target, false);
+      }
+      throw new Error(`フレームID ${target}を正確にデコードできませんでした${suffix}`);
     }
 
     async _seekToFrame(frame, timeSec) {
       if (this.closed) throw new Error("動画は閉じられています");
       const targetFrame = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(frame) || 0)));
-      if (this.frameTimes?.length && Number.isFinite(this.presentedFrame)) {
-        if (targetFrame === this.presentedFrame) return;
-        if (targetFrame < this.presentedFrame) await this._resetToFirstFrame();
-        if (targetFrame > this.presentedFrame) await this._playToFrame(targetFrame);
+      if (this.frameTimes?.length) {
+        await this._seekToTimedFrame(targetFrame);
         return;
       }
       const frameDuration = 1 / this.fps;
@@ -563,21 +791,22 @@
         const presented = typeof this.video.requestVideoFrameCallback === "function"
           ? this._waitForPresentedFrame(targetTime, frameDuration)
           : null;
-        const seeked = waitForEvent(this.video, "seeked");
-        this.video.currentTime = targetTime;
-        await seeked;
-        if (presented) await presented;
+        const seeked = this._seekVideo(targetTime);
+        await Promise.all([seeked, presented]);
         didSeek = true;
       }
       if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        await waitForEvent(this.video, "loadeddata");
+        await waitForEvent(this.video, "loadeddata", "error", {
+          isReady: () => this.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA,
+          signal: this.closeController.signal,
+        });
       }
       if (didSeek && typeof this.video.requestVideoFrameCallback !== "function") {
         await this._waitForPresentedFrame(targetTime, frameDuration);
       }
     }
 
-    _waitForPresentedFrame(targetTime, frameDuration) {
+    _waitForPresentedFrame(targetTime, frameDuration, timeoutMs = UNKNOWN_TIMING_PRESENTATION_TIMEOUT_MS) {
       if (typeof this.video.requestVideoFrameCallback !== "function") {
         return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }
@@ -589,6 +818,7 @@
           if (settled) return;
           settled = true;
           clearTimeout(timeoutId);
+          this.closeController.signal.removeEventListener("abort", finish);
           if (callbackId && this.video.cancelVideoFrameCallback) {
             this.video.cancelVideoFrameCallback(callbackId);
           }
@@ -602,7 +832,12 @@
           }
           callbackId = this.video.requestVideoFrameCallback(checkFrame);
         };
-        const timeoutId = setTimeout(finish, 1200);
+        // Some Chromium builds do not emit another video-frame callback for a
+        // paused, detached video after `seeked`. The seek event already makes
+        // the decoded frame drawable, so keep this as a short settling window
+        // instead of blocking every frame move for more than a second.
+        const timeoutId = setTimeout(finish, timeoutMs);
+        this.closeController.signal.addEventListener("abort", finish, { once: true });
         callbackId = this.video.requestVideoFrameCallback(checkFrame);
       });
     }
@@ -617,6 +852,7 @@
     close() {
       if (this.closed) return;
       this.closed = true;
+      this.closeController.abort();
       this.video.pause();
       this.video.removeAttribute("src");
       this.video.load();

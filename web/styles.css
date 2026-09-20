@@ -329,6 +329,16 @@ button:hover,
   font-weight: 700;
 }
 
+.mode-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ios-privacy-link {
+  display: none;
+}
+
 .infobar {
   display: none;
   grid-template-columns: minmax(240px, 1fr) minmax(220px, 0.9fr);
@@ -388,6 +398,521 @@ button:hover,
   grid-template-columns: minmax(220px, 0.65fr) minmax(320px, 0.95fr) minmax(420px, 1.15fr);
   gap: 10px;
   align-self: stretch;
+}
+
+.step-analysis-view {
+  grid-row: 5 / 7;
+  min-width: 0;
+  min-height: 0;
+  margin: 10px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  align-self: stretch;
+}
+
+.step-control-panel,
+.step-viewer-panel,
+.step-quality-panel,
+.step-metrics-panel,
+.step-events-panel {
+  min-width: 0;
+}
+
+.step-control-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.step-heading-row,
+.step-result-heading,
+.step-timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.step-heading-row h2,
+.step-result-heading h2,
+.step-metrics-panel h2,
+.step-timeline-head h3 {
+  margin: 0;
+}
+
+.step-heading-row p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.step-local-badge {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border: 1px solid #9ccfd3;
+  border-radius: 999px;
+  background: var(--ai-soft);
+  color: #075d66;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.step-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(155px, 1.15fr) repeat(2, minmax(100px, 0.7fr)) minmax(110px, 0.75fr) minmax(145px, 1fr) minmax(125px, 0.9fr) minmax(180px, 1.2fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.step-checkbox-field {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.step-checkbox-field input {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.step-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+.step-action-spacer {
+  flex: 1 1 20px;
+}
+
+.step-progress-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1.3fr);
+  gap: 10px;
+  align-items: center;
+}
+
+#stepProgress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--accent);
+}
+
+.step-progress-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 7px;
+  align-items: center;
+}
+
+#stepProgressText {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.step-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.step-backend-status {
+  margin-top: 3px;
+  color: #506075;
+  font-size: 11px;
+}
+
+.step-main-grid {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(480px, 1.55fr) minmax(340px, 0.85fr);
+  gap: 10px;
+}
+
+.step-viewer-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(280px, 1fr) auto auto;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.step-video-stage {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+  aspect-ratio: var(--step-aspect, 16 / 9);
+  align-self: center;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #111827;
+}
+
+#stepFrameCanvas,
+#stepOverlayCanvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#stepFrameCanvas {
+  pointer-events: none;
+}
+
+#stepOverlayCanvas {
+  cursor: crosshair;
+  touch-action: pan-y pinch-zoom;
+}
+
+.step-frame-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 2;
+  max-width: calc(100% - 20px);
+  padding: 5px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.78);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.step-playback-controls {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(140px, 1fr) minmax(92px, 0.22fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.step-play-button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+#stepFrameSlider {
+  width: 100%;
+  align-self: center;
+}
+
+.step-frame-input-field input {
+  min-width: 0;
+}
+
+.step-timeline {
+  min-width: 0;
+}
+
+.step-timeline-head {
+  align-items: flex-end;
+  margin-bottom: 6px;
+}
+
+.step-timeline-head h3 {
+  font-size: 14px;
+}
+
+.step-timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.step-timeline-legend span::before {
+  content: "";
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 4px;
+  border-radius: 50%;
+}
+
+.step-legend-left::before {
+  background: #2364aa;
+}
+
+.step-legend-right::before {
+  background: #d9531e;
+}
+
+.step-legend-review::before {
+  border-radius: 2px !important;
+  background: #f2bd52;
+}
+
+.step-timeline-track {
+  position: relative;
+  min-height: 78px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background:
+    linear-gradient(to bottom, transparent 49%, var(--line) 49%, var(--line) 51%, transparent 51%),
+    repeating-linear-gradient(to right, #fff 0, #fff calc(10% - 1px), #edf0f3 calc(10% - 1px), #edf0f3 10%);
+}
+
+.step-timeline-track:empty::after {
+  content: "分析後に左右の接地イベントと要確認区間を表示します";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.step-timeline-quality-interval {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  background: rgba(242, 189, 82, 0.3);
+  border-inline: 1px solid rgba(180, 116, 0, 0.45);
+}
+
+.step-timeline-event {
+  position: absolute;
+  top: 11px;
+  width: 3px;
+  height: 23px;
+  border: 0;
+  border-radius: 2px;
+  padding: 0;
+  transform: translateX(-50%);
+  background: #2364aa;
+}
+
+.step-timeline-event[data-side="right"] {
+  top: 43px;
+  background: #d9531e;
+}
+
+.step-timeline-event.corrected {
+  outline: 2px solid #ffffff;
+  box-shadow: 0 0 0 2px #7a4b00;
+}
+
+.step-event-edit,
+.step-event-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.step-event-edit button,
+.step-event-actions button {
+  min-height: 28px;
+  padding: 3px 6px;
+}
+
+.step-side-left {
+  color: #2364aa;
+  font-weight: 700;
+}
+
+.step-side-right {
+  color: #b54718;
+  font-weight: 700;
+}
+
+#stepOverlayCanvas.selecting-subject {
+  cursor: crosshair;
+  touch-action: none;
+  outline: 3px solid #ffe066;
+  outline-offset: -3px;
+}
+
+.step-timeline-event.selected {
+  box-shadow: 0 0 0 3px rgba(35, 100, 170, 0.25);
+}
+
+.step-timeline-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  background: #111827;
+  pointer-events: none;
+}
+
+.step-results-column {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(220px, 1fr);
+  gap: 10px;
+}
+
+.step-result-heading {
+  flex-wrap: wrap;
+}
+
+.step-quality-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 1px solid #aeb8c5;
+  border-radius: 999px;
+  background: #f3f5f7;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.step-quality-badge[data-status="good"],
+.step-quality-badge.good {
+  border-color: #72b38a;
+  background: #eef8f1;
+  color: #176331;
+}
+
+.step-quality-badge[data-status="review"],
+.step-quality-badge.review {
+  border-color: #d7a94f;
+  background: #fff7e6;
+  color: #7a4b00;
+}
+
+.step-quality-badge[data-status="unusable"],
+.step-quality-badge.unusable {
+  border-color: #d7a08f;
+  background: #fff1ed;
+  color: #8f2c16;
+}
+
+.step-quality-reasons {
+  margin: 9px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.step-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.step-metric-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 7px;
+  align-items: baseline;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fbfcfd;
+}
+
+.step-metric-card span {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.step-metric-card strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+}
+
+.step-metric-card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.step-stat-table-wrap {
+  margin-top: 9px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.step-stat-table {
+  min-width: 620px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-stat-table th,
+.step-stat-table td {
+  padding: 5px 6px;
+  white-space: nowrap;
+}
+
+.step-events-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.step-events-help {
+  margin: 6px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.step-event-table-wrap {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.step-event-table {
+  min-width: 680px;
+  table-layout: auto;
+}
+
+.step-event-table th,
+.step-event-table td {
+  height: 32px;
+}
+
+.step-event-table input[type="number"] {
+  width: 78px;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 5px;
+}
+
+.step-event-table tr.selected td {
+  background: var(--accent-soft);
+}
+
+.step-event-table .step-empty-row td {
+  height: 72px;
+  color: var(--muted);
+  text-align: center;
 }
 
 .comparison-panel {
@@ -1220,6 +1745,26 @@ td.calibration-cell {
     grid-template-columns: 1fr;
   }
 
+  .step-analysis-view {
+    overflow: visible;
+  }
+
+  .step-settings-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .step-main-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .step-viewer-panel {
+    min-height: 620px;
+  }
+
+  .step-results-column {
+    min-height: 620px;
+  }
+
   .analysis-controls.three-cols,
   .analysis-controls.four-cols,
   .analysis-frame-controls {
@@ -1302,6 +1847,70 @@ td.calibration-cell {
     padding: 8px;
   }
 
+  .step-analysis-view {
+    margin: 8px;
+  }
+
+  .view-tabs {
+    overflow-x: auto;
+  }
+
+  .view-tabs button {
+    flex: 0 0 auto;
+  }
+
+  .step-heading-row,
+  .step-timeline-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .step-settings-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .step-checkbox-field,
+  .step-settings-grid .field-block:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .step-action-spacer {
+    display: none;
+  }
+
+  .step-action-bar button {
+    flex: 1 1 140px;
+  }
+
+  .step-progress-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .step-playback-controls {
+    grid-template-columns: auto auto auto minmax(0, 1fr);
+  }
+
+  .step-frame-input-field {
+    grid-column: 1 / -1;
+  }
+
+  .step-metric-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .step-viewer-panel {
+    min-height: 540px;
+    grid-template-rows: minmax(240px, 1fr) auto auto;
+  }
+
+  .step-video-stage {
+    min-height: 0;
+  }
+
+  .step-results-column {
+    min-height: 680px;
+  }
+
   .analysis-panel > .panel-title-row .mini-actions {
     flex-basis: 100%;
     justify-content: flex-start;
@@ -1317,4 +1926,676 @@ td.calibration-cell {
   .quick-action-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.ios-only {
+  display: none;
+}
+
+/* Keep the shared desktop controls open and in their original layout. */
+html:not(.ios-app) .step-disclosure,
+html:not(.ios-app) .step-video-input-panel,
+html:not(.ios-app) .step-secondary-action-list,
+html:not(.ios-app) .step-event-details-content {
+  display: contents;
+}
+
+html:not(.ios-app) .step-disclosure::details-content {
+  display: contents;
+}
+
+html:not(.ios-app) .step-disclosure > summary {
+  display: none;
+}
+
+html.ios-app {
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+
+html.ios-app .desktop-only,
+html.ios-app .topbar .primary-actions,
+html.ios-app .toolbar-menus,
+html.ios-app .view-tabs,
+html.ios-app #digitizeWorkspace,
+html.ios-app #digitizeTimeline,
+html.ios-app #analysisView,
+html.ios-app #markerInfo,
+html.ios-app #frameInfo,
+html.ios-app #dirtyMark,
+html.ios-app #appMode,
+html.ios-app #statusText,
+html.ios-app .infobar,
+html.ios-app .step-digitize-range-control,
+html.ios-app .step-backend-control {
+  display: none !important;
+}
+
+html.ios-app .ios-only {
+  display: block;
+}
+
+html.ios-app .ios-only[hidden],
+html.ios-app .step-preview-status:empty,
+html.ios-app .ios-video-load-status:empty {
+  display: none;
+}
+
+html.ios-app .app {
+  display: block;
+  min-height: 100dvh;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+html.ios-app .topbar {
+  display: flex;
+  min-height: 58px;
+  padding: 12px max(16px, env(safe-area-inset-left));
+}
+
+html.ios-app .app-brand {
+  gap: 3px;
+}
+
+html.ios-app .app-brand .ios-brand-subtitle {
+  font-size: 12px;
+  text-transform: none;
+}
+
+html.ios-app .statusbar {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 16px;
+  font-size: 12px;
+}
+
+html.ios-app .statusbar > div:first-child {
+  min-width: 0;
+}
+
+html.ios-app #videoName {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html.ios-app .mode-actions {
+  flex-shrink: 0;
+}
+
+html.ios-app #stepAnalysisView {
+  display: grid !important;
+  grid-template-rows: none;
+  grid-auto-rows: auto;
+  gap: 12px;
+  margin: 12px;
+}
+
+html.ios-app .step-control-panel {
+  display: contents;
+}
+
+html.ios-app .step-video-input-panel {
+  display: grid;
+  order: 0;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+html.ios-app .step-heading-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+html.ios-app .step-heading-row h2 {
+  font-size: 17px;
+  line-height: 1.5;
+}
+
+html.ios-app .step-local-badge {
+  padding: 4px 7px;
+  font-size: 10px;
+}
+
+html.ios-app .ios-workflow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+html.ios-app .ios-workflow li {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  color: #506075;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+html.ios-app .ios-workflow li span {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+html.ios-app .ios-video-input h3 {
+  margin: 0 0 9px;
+  font-size: 14px;
+}
+
+html.ios-app .ios-video-input-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+html.ios-app .ios-video-input-actions button {
+  min-height: 50px;
+  border-color: #aabfd7;
+  border-radius: 10px;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+html.ios-app .ios-recording-hint,
+html.ios-app .ios-metric-note {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+html.ios-app .ios-video-load-status {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f2f6fb;
+  color: #334860;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+html.ios-app .step-action-bar {
+  display: grid;
+  order: 2;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+html.ios-app .step-readiness-status {
+  grid-column: 1 / -1;
+  color: #334860;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+html.ios-app #stepRunAnalysis {
+  min-height: 52px;
+  border-radius: 10px;
+  font-size: 16px;
+}
+
+html.ios-app #stepRunAnalysis:disabled {
+  border-color: #c4cedb;
+  background: #e8edf3;
+  color: #65748a;
+  cursor: default;
+}
+
+html.ios-app #stepCancelAnalysis:disabled {
+  display: none;
+}
+
+html.ios-app .step-action-bar:has(#stepCancelAnalysis:disabled) #stepRunAnalysis {
+  grid-column: 1 / -1;
+}
+
+html.ios-app .step-progress-row {
+  order: 3;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  padding-inline: 4px;
+}
+
+html.ios-app .step-progress-meter:has(#stepProgress[value="0"]) {
+  display: none;
+}
+
+html.ios-app .step-status {
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+html.ios-app .step-backend-status {
+  line-height: 1.5;
+}
+
+html.ios-app .step-advanced-settings {
+  order: 4;
+  padding: 4px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+html.ios-app .step-disclosure {
+  min-width: 0;
+  border-top: 1px solid #e3e8ee;
+}
+
+html.ios-app .step-disclosure > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 0;
+  color: #4c5c70;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  list-style: none;
+}
+
+html.ios-app .step-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+html.ios-app .step-disclosure > summary::after {
+  content: "+";
+  flex-shrink: 0;
+  font-size: 19px;
+  font-weight: 500;
+}
+
+html.ios-app .step-disclosure[open] > summary::after {
+  content: "−";
+}
+
+html.ios-app .step-disclosure[open] > summary {
+  color: var(--accent);
+}
+
+html.ios-app .step-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding-top: 4px;
+}
+
+html.ios-app .step-secondary-actions {
+  grid-column: 1 / -1;
+  margin-top: 3px;
+}
+
+html.ios-app .step-secondary-action-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 4px;
+}
+
+html.ios-app .step-secondary-action-list button {
+  min-width: 0;
+  font-size: 12px;
+}
+
+html.ios-app .step-action-spacer {
+  display: none;
+}
+
+html.ios-app .step-main-grid {
+  display: contents;
+}
+
+html.ios-app .step-results-column {
+  display: grid;
+  order: 5;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto;
+  min-height: 0;
+  gap: 12px;
+}
+
+html.ios-app .step-viewer-panel {
+  display: flex;
+  order: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 10px;
+  padding: 12px;
+}
+
+html.ios-app .step-trim-heading h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+html.ios-app .step-trim-heading p,
+html.ios-app .step-trim-time-help {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+html.ios-app .step-trim-controls {
+  min-width: 0;
+  border-top: 1px solid #e3e8ee;
+}
+
+html.ios-app .step-trim-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+html.ios-app .step-trim-section-title h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+html.ios-app .step-reset-trim {
+  flex: 0 0 auto;
+  padding-inline: 3px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+html.ios-app .step-trim-time-help {
+  margin: 0 0 10px;
+}
+
+html.ios-app .step-trim-time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+html.ios-app .step-trim-time-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+html.ios-app .step-trim-time-field input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #bdcbdc;
+  border-radius: 8px;
+  background: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+html.ios-app .step-trim-time-field button {
+  padding-inline: 5px;
+  font-size: 12px;
+}
+
+html.ios-app .step-trim-status {
+  margin-top: 9px;
+  color: #415873;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+html.ios-app .step-crop-section-title {
+  margin-top: 10px;
+  border-top: 1px solid #e3e8ee;
+}
+
+html.ios-app .step-select-crop {
+  width: 100%;
+  border-color: #aabfd7;
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+html.ios-app .step-select-crop[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+html.ios-app #stepOverlayCanvas.selecting-crop,
+html.ios-app #stepCanvasStack.selecting-crop #stepOverlayCanvas {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+html.ios-app .step-crop-help,
+html.ios-app .step-trim-original-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+html.ios-app .step-trim-original-note {
+  padding: 9px;
+  border-radius: 7px;
+  background: #f2f6fb;
+}
+
+html.ios-app .step-timeline-details {
+  width: 100%;
+}
+
+html.ios-app .step-video-stage {
+  max-height: 52dvh;
+  border-radius: 10px;
+}
+
+html.ios-app .ios-video-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px;
+  background: #edf2f7;
+  color: #63748a;
+  font-size: 11px;
+  text-align: center;
+  pointer-events: none;
+}
+
+html.ios-app .ios-video-placeholder strong {
+  color: #334860;
+  font-size: 14px;
+}
+
+html.ios-app .ios-preview-symbol {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #fff;
+  color: #7890ab;
+  font-size: 13px;
+}
+
+html.ios-app .step-preview-status {
+  padding: 8px;
+  border-radius: 7px;
+  background: #fff7e6;
+  color: #7a4b00;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+html.ios-app .step-playback-controls {
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  gap: 7px;
+}
+
+html.ios-app .step-frame-input-field {
+  display: none;
+}
+
+html.ios-app .step-timeline-head {
+  align-items: flex-start;
+  gap: 7px;
+}
+
+html.ios-app .step-quality-panel,
+html.ios-app .step-metrics-panel,
+html.ios-app .step-events-panel {
+  padding: 14px;
+}
+
+html.ios-app .step-metrics-panel h2 {
+  font-size: 16px;
+}
+
+html.ios-app .step-metric-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin: 12px 0;
+}
+
+html.ios-app .step-metric-card {
+  min-height: 90px;
+  padding: 12px 10px;
+  background: #f4f8fd;
+  border-color: #e1e9f3;
+}
+
+html.ios-app .step-metric-card strong {
+  font-size: 25px;
+}
+
+html.ios-app .step-events-panel {
+  display: block;
+}
+
+html.ios-app .step-event-details {
+  border-top: 0;
+}
+
+html.ios-app .step-event-details > summary {
+  padding-block: 0;
+}
+
+html.ios-app .step-event-details[open] > summary {
+  margin-bottom: 12px;
+}
+
+html.ios-app .step-event-details-content {
+  min-width: 0;
+}
+
+html.ios-app button,
+html.ios-app input,
+html.ios-app select,
+html.ios-app summary,
+html.ios-app .file-button {
+  min-height: 44px;
+}
+
+html.ios-app .ios-privacy-link {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+html.ios-app #stepPrevFrame,
+html.ios-app #stepNextFrame {
+  min-width: 44px;
+}
+
+html.ios-app .step-timeline-track {
+  min-height: 96px;
+}
+
+html.ios-app .step-timeline-event {
+  top: 2px;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  border-radius: 6px;
+  background: transparent;
+  touch-action: none;
+}
+
+html.ios-app .step-timeline-event[data-side="right"] {
+  top: 50px;
+  background: transparent;
+}
+
+html.ios-app .step-timeline-event::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  width: 3px;
+  height: 24px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: #2364aa;
+}
+
+html.ios-app .step-timeline-event[data-side="right"]::before {
+  background: #d9531e;
+}
+
+html.ios-app .step-timeline-event.corrected {
+  outline: 0;
+  box-shadow: none;
+}
+
+html.ios-app .step-timeline-event.corrected::before {
+  outline: 2px solid #ffffff;
+  box-shadow: 0 0 0 2px #7a4b00;
+}
+
+html.ios-app .step-timeline-event.selected {
+  box-shadow: inset 0 0 0 2px rgba(35, 100, 170, 0.32);
+}
+
+html.ios-app input,
+html.ios-app select,
+html.ios-app textarea {
+  font-size: 16px;
+}
+
+html.ios-app button,
+html.ios-app summary,
+html.ios-app .file-button {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }

@@ -3,7 +3,7 @@
 
   const DB_NAME = "video_digitizer_local";
   const STORE_NAME = "projects";
-  const BUILD_ID = "2.2.0-perf7";
+  const BUILD_ID = "2.2.0-lite1";
 
   function openDatabase() {
     if (!global.indexedDB) return Promise.resolve(null);
@@ -25,13 +25,28 @@
     return new Promise((resolve, reject) => {
       const transaction = database.transaction(STORE_NAME, mode);
       const request = callback(transaction.objectStore(STORE_NAME));
-      request.onsuccess = () => resolve(request.result ?? null);
-      request.onerror = () => reject(request.error || new Error("ブラウザ保存に失敗しました"));
-      transaction.oncomplete = () => database.close();
-      transaction.onerror = () => {
+      let result = null;
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
         database.close();
-        reject(transaction.error || new Error("ブラウザ保存に失敗しました"));
+        reject(error || new Error("ブラウザ保存に失敗しました"));
       };
+      request.onsuccess = () => {
+        result = request.result ?? null;
+      };
+      request.onerror = () => fail(request.error);
+      transaction.oncomplete = () => {
+        if (settled) return;
+        settled = true;
+        database.close();
+        resolve(result);
+      };
+      transaction.onerror = () => {
+        fail(transaction.error);
+      };
+      transaction.onabort = () => fail(transaction.error || new Error("ブラウザ保存が中断されました"));
     });
   }
 
@@ -48,8 +63,13 @@
     },
   };
 
+  const iosApp = global.VideoDigitizerNative?.isIOSApp === true;
   const standaloneWebMode = !new URLSearchParams(location.search).has("token");
-  if (standaloneWebMode && (location.protocol === "http:" || location.protocol === "https:")) {
+  if (iosApp) {
+    navigator.serviceWorker?.getRegistrations?.()
+      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+      .catch(() => {});
+  } else if (standaloneWebMode && (location.protocol === "http:" || location.protocol === "https:")) {
     let refreshing = false;
     navigator.serviceWorker?.addEventListener("controllerchange", () => {
       if (refreshing) return;

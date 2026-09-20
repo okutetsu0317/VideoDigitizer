@@ -29,6 +29,7 @@ const DEFAULT_MARKERS = [
 const VIDEO_HASH_CHUNK_SIZE = 1024 * 1024;
 const PROJECT_SCHEMA = "fps_viewer_web_project_v1";
 const AUTOSAVE_KEY = "video_digitizer_autosave_v1";
+const MAX_NATIVE_RECOVERY_BYTES = 64 * 1024 * 1024;
 const PROTOCOL_KEY = "video_digitizer_analysis_protocol_v1";
 const SUPPORTED_PROJECT_SCHEMAS = new Set([
   PROJECT_SCHEMA,
@@ -85,6 +86,8 @@ const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
 const APP_VERSION = "2.2.0";
 const AI_SUGGESTION_VERSION = 1;
+let autosaveQueue = Promise.resolve(true);
+let lastAutosaveRevisionKey = "";
 const HIGH_ACCURACY_AI_MODEL_ID = "google_deepmind_tapnextpp_512";
 const POSE_AI_MODEL = {
   id: "mediapipe_pose_landmarker_lite",
@@ -130,6 +133,11 @@ const els = {
   frameImage: $("frameImage"),
   openVideoButton: $("openVideoButton"),
   videoFile: $("videoFile"),
+  iosChooseVideoButton: $("iosChooseVideoButton"),
+  iosRecordVideoButton: $("iosRecordVideoButton"),
+  iosRecordVideoFile: $("iosRecordVideoFile"),
+  iosVideoLoadStatus: $("iosVideoLoadStatus"),
+  iosVideoPlaceholder: $("iosVideoPlaceholder"),
   projectFile: $("projectFile"),
   calibrationFile: $("calibrationFile"),
   timestampFile: $("timestampFile"),
@@ -137,9 +145,11 @@ const els = {
   cursorCanvas: $("cursorCanvas"),
   digitizeTab: $("digitizeTab"),
   analysisTab: $("analysisTab"),
+  stepAnalysisTab: $("stepAnalysisTab"),
   digitizeWorkspace: $("digitizeWorkspace"),
   digitizeTimeline: $("digitizeTimeline"),
   analysisView: $("analysisView"),
+  stepAnalysisView: $("stepAnalysisView"),
   analysisSummary: $("analysisSummary"),
   fpsInput: $("fpsInput"),
   autoAdvance: $("autoAdvance"),
@@ -345,6 +355,7 @@ const state = {
   frameCount: 0,
   frameCountEstimated: false,
   frameCountMethod: "",
+  frameTimingMode: "",
   trailLength: 30,
   trimStart: 0,
   trimEnd: 0,
@@ -364,11 +375,18 @@ const state = {
   zoomRect: null,
   dirty: false,
   ready: false,
+  videoLoading: false,
+  videoLoadController: null,
   frameSource: null,
   sourceMode: new URLSearchParams(window.location.search).get("local") === "1" ? "api" : "browser",
   seeking: false,
   seekSerial: 0,
+  activeDisplayFrame: null,
+  pendingDisplayFrame: null,
   frameCacheToken: 0,
+  autosaveRevision: 0,
+  videoLoadGeneration: 0,
+  projectLoadGeneration: 0,
   frameCache: new Map(),
   frameRequests: new Map(),
   prefetchTimer: 0,
@@ -377,6 +395,7 @@ const state = {
   cursorDrawRequest: 0,
   videoWidth: 0,
   videoHeight: 0,
+  videoDurationSec: 0,
   pendingTrim: null,
   sessionId: createSessionId(),
   appToken: "",
@@ -386,6 +405,7 @@ const state = {
   aiTrackingCapabilities: null,
   tableSnapshot: "",
   progressSnapshot: "",
+  videoInfoSnapshot: "",
   projectFileHandle: null,
   projectFileName: "",
   videoIdentity: null,
@@ -433,6 +453,10 @@ const state = {
   },
 };
 
+const IS_IOS_APP = globalThis.VideoDigitizerNative?.isIOSApp === true;
+const IOS_STORAGE_ORIGIN_CHANGED = IS_IOS_APP
+  && new URLSearchParams(globalThis.location.search).get("storage_origin_changed") === "1";
+
 function updateZoomToggleButton() {
   const enabled = els.zoomEnabled.checked;
   els.zoomToggleButton.textContent = enabled ? "ズーム ON" : "ズーム OFF";
@@ -468,13 +492,44 @@ function setStatus(text) {
   els.statusText.textContent = text;
 }
 
+function setVideoPreparation(phase, message, generation = state.videoLoadGeneration) {
+  if (!ownsVideoLoad(generation)) return;
+  state.videoLoading = phase === "loading";
+  if (els.iosVideoLoadStatus) {
+    els.iosVideoLoadStatus.textContent = message;
+    els.iosVideoLoadStatus.dataset.phase = phase;
+  }
+  if (els.iosVideoPlaceholder) els.iosVideoPlaceholder.hidden = state.ready;
+  els.stepAnalysisView?.setAttribute("aria-busy", String(state.videoLoading));
+  globalThis.VideoDigitizerStepAnalysis?.onVideoPreparation?.({ phase, message });
+  if (message) setStatus(message);
+}
+
+function withVideoLoadDeadline(promise, signal, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let timer;
+    const finish = (callback, value) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      callback(value);
+    };
+    const abort = () => finish(reject, new Error("動画の読み込みをキャンセルしました"));
+    timer = setTimeout(() => finish(reject, new Error("動画の読み取りが時間内に完了しませんでした。端末に保存済みの動画を選び直してください")), timeoutMs);
+    signal?.addEventListener("abort", abort, { once: true });
+    Promise.resolve(promise).then((value) => finish(resolve, value), (error) => finish(reject, error));
+    if (signal?.aborted) abort();
+  });
+}
+
 function usesBrowserFrameSource() {
   return state.sourceMode === "browser";
 }
 
 function updateAppMode() {
   if (!els.appMode) return;
-  els.appMode.textContent = usesBrowserFrameSource() ? "処理: ブラウザ内" : "処理: ローカルアプリ";
+  els.appMode.textContent = IS_IOS_APP
+    ? "処理: iOS端末内"
+    : usesBrowserFrameSource() ? "処理: ブラウザ内" : "処理: ローカルアプリ";
   els.shutdownApp.hidden = usesBrowserFrameSource();
 }
 
@@ -486,6 +541,7 @@ function frameDisplayMode() {
 function markDirty() {
   state.dirty = true;
   state.cloud.dirty = true;
+  state.autosaveRevision += 1;
   updateStatus();
 }
 
@@ -531,6 +587,9 @@ function hexFromBuffer(buffer) {
 
 function fileReadHelp(file, label, error) {
   const reason = error?.message ? ` (${error.message})` : "";
+  if (IS_IOS_APP) {
+    return `${label}を読み込めませんでした${reason}。Filesアプリでクラウド上の項目を長押しして「今すぐダウンロード」を完了してから、もう一度選択してください。`;
+  }
   return `${label}を読み込めませんでした${reason}。iCloud Drive、Dropbox、Google Driveなどのクラウド上のファイルは、Finder上で雲アイコンをクリックしてローカルにダウンロードしてから、もう一度選択してください。`;
 }
 
@@ -1045,15 +1104,46 @@ function hasCalibrationTransform() {
 }
 
 function setActiveView(view) {
-  state.activeView = view === "analysis" ? "analysis" : "digitize";
+  state.activeView = IS_IOS_APP ? "step_analysis" : ["analysis", "step_analysis"].includes(view) ? view : "digitize";
+  document.body.dataset.activeView = state.activeView;
   const analysis = state.activeView === "analysis";
-  els.digitizeTab.classList.toggle("active", !analysis);
+  const stepAnalysis = state.activeView === "step_analysis";
+  const digitize = !analysis && !stepAnalysis;
+  els.digitizeTab.classList.toggle("active", digitize);
   els.analysisTab.classList.toggle("active", analysis);
-  els.digitizeWorkspace.classList.toggle("hidden", analysis);
-  els.digitizeTimeline.classList.toggle("hidden", analysis);
+  els.stepAnalysisTab?.classList.toggle("active", stepAnalysis);
+  els.digitizeTab.setAttribute("aria-selected", String(digitize));
+  els.analysisTab.setAttribute("aria-selected", String(analysis));
+  els.stepAnalysisTab?.setAttribute("aria-selected", String(stepAnalysis));
+  els.digitizeWorkspace.classList.toggle("hidden", !digitize);
+  els.digitizeTimeline.classList.toggle("hidden", !digitize);
   els.analysisView.classList.toggle("hidden", !analysis);
+  els.stepAnalysisView?.classList.toggle("hidden", !stepAnalysis);
+  globalThis.VideoDigitizerStepAnalysis?.setActive?.(stepAnalysis);
   if (analysis) renderAnalysis();
   draw();
+}
+
+function videoPlaybackTime(frame) {
+  const index = Math.max(0, Math.min(Math.max(0, state.frameCount - 1), Math.round(Number(frame) || 0)));
+  const time = state.frameSource?.timeForFrame?.(index);
+  return Number.isFinite(time) ? time : index / Math.max(0.001, state.fps);
+}
+
+async function getStepFrameBitmap(frame, options = {}) {
+  const index = Math.max(0, Math.min(Math.max(0, state.frameCount - 1), Math.round(Number(frame) || 0)));
+  const resource = await fetchFrameResource(index);
+  const crop = options?.crop;
+  if (!crop) return createImageBitmap(resource.image);
+  const { x, y, width, height } = crop;
+  if (![x, y, width, height].every(Number.isInteger)
+    || x < 0 || y < 0 || width < 1 || height < 1
+    || x + width > resource.image.width || y + height > resource.image.height) {
+    throw new Error("画像の分析範囲が動画の外にはみ出しています。範囲を指定し直してください");
+  }
+  // Keep the source-frame cache full-size. Only the inference bitmap is
+  // cropped, and the controller maps its results back to source coordinates.
+  return createImageBitmap(resource.image, x, y, width, height);
 }
 
 function updateStatus() {
@@ -1134,6 +1224,10 @@ function videoInfoRows() {
 }
 
 function updateVideoInfo() {
+  const rows = videoInfoRows();
+  const snapshot = JSON.stringify([state.ready, rows]);
+  if (state.videoInfoSnapshot === snapshot) return;
+  state.videoInfoSnapshot = snapshot;
   if (els.videoInfo) {
     els.videoInfo.textContent = state.ready
       ? `動画情報: ${state.videoWidth} x ${state.videoHeight} / ${Number(state.fps || 0).toFixed(3)} fps / ${state.frameCount}F`
@@ -1146,7 +1240,7 @@ function updateVideoInfo() {
   }
   if (els.videoInfoPanel) {
     els.videoInfoPanel.replaceChildren();
-    for (const [label, value] of videoInfoRows()) {
+    for (const [label, value] of rows) {
       const dt = document.createElement("dt");
       const dd = document.createElement("dd");
       dt.textContent = label;
@@ -1217,6 +1311,7 @@ function setTrim(start, end) {
   }
   state.progressSnapshot = "";
   markDirty();
+  globalThis.VideoDigitizerStepAnalysis?.onDigitizeRangeChanged?.();
   seekFrame(state.frame);
   setStatus(`デジタイズ範囲を ${state.trimStart}-${state.trimEnd} にしました`);
 }
@@ -1271,7 +1366,13 @@ function updateCompletionInfo() {
 
   let filled = 0;
   let completeFrames = 0;
-  for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
+  const populatedFrames = new Set([
+    ...Object.keys(state.points),
+    ...Object.keys(state.pointFlags),
+  ]);
+  for (const frameKey of populatedFrames) {
+    const frame = Number(frameKey);
+    if (!Number.isInteger(frame) || frame < state.trimStart || frame > state.trimEnd) continue;
     let frameFilled = 0;
     for (const marker of state.markers) {
       if (getPoint(frame, marker) || isResolvedPointStatus(pointStatusAt(frame, marker))) frameFilled += 1;
@@ -2735,7 +2836,9 @@ function updateAITrackingControls() {
   const model = capabilities?.model;
   const modelReady = Boolean(runtimeAvailable && model?.valid);
   if (!localApp) {
-    els.aiTrackingStatus.textContent = "高精度AI: Macアプリ版で利用できます";
+    els.aiTrackingStatus.textContent = IS_IOS_APP
+      ? "高精度AI（TAPNext++）: iOS版では未対応"
+      : "高精度AI: Macアプリ版で利用できます";
   } else if (!capabilities) {
     els.aiTrackingStatus.textContent = "高精度AI: 状態を確認できません";
   } else if (!runtimeAvailable) {
@@ -4290,6 +4393,9 @@ function resetFrameCache() {
   for (const item of state.frameCache.values()) releaseFrameResource(item);
   state.frameCache.clear();
   state.frameRequests.clear();
+  state.pendingDisplayFrame = null;
+  state.activeDisplayFrame = null;
+  state.seeking = false;
 }
 
 function releaseFrameResource(resource) {
@@ -4300,6 +4406,11 @@ function releaseFrameResource(resource) {
 
 function clientFrameCacheLimit() {
   const pixels = Math.max(1, state.videoWidth * state.videoHeight);
+  if (IS_IOS_APP) {
+    if (pixels >= 3840 * 2160) return 2;
+    if (pixels >= 1920 * 1080) return 4;
+    return 8;
+  }
   let limit = pixels >= 3840 * 2160 ? 4 : pixels >= 1920 * 1080 ? 8 : 16;
   const memory = Number(navigator.deviceMemory) || 8;
   if (memory <= 4) limit = Math.max(4, Math.floor(limit / 2));
@@ -4308,6 +4419,7 @@ function clientFrameCacheLimit() {
 
 function clientPrefetchRadius() {
   const pixels = Math.max(1, state.videoWidth * state.videoHeight);
+  if (IS_IOS_APP) return 1;
   return pixels >= 1920 * 1080 || (Number(navigator.deviceMemory) || 8) <= 4 ? 1 : 2;
 }
 
@@ -4353,7 +4465,9 @@ async function fetchFrameResource(frame, token = state.frameCacheToken) {
   const pending = state.frameRequests.get(frame);
   if (pending) return pending;
 
-  const storedTime = Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
+  // Step-only iOS always uses the container timeline, never a legacy manual
+  // digitizer timestamp table restored with an older project.
+  const storedTime = IS_IOS_APP ? NaN : Number(state.frameTimestamps[String(Math.round(Number(frame) || 0))]);
   const timeSec = Number.isFinite(storedTime) ? storedTime : undefined;
   let resourcePromise = null;
   if (state.frameSource?.getFrameImage) {
@@ -4430,8 +4544,47 @@ function prefetchAdjacentFrames(frame, token, serial) {
 function finishSeek(serial) {
   if (serial !== state.seekSerial) return;
   state.seeking = false;
+  state.activeDisplayFrame = null;
   updateStatus();
   draw();
+}
+
+function startBrowserFrameSeek(frame) {
+  const serial = ++state.seekSerial;
+  const token = state.frameCacheToken;
+  state.seeking = true;
+  state.activeDisplayFrame = frame;
+  updateStatus();
+
+  loadFrameForDisplay(frame, token).then((resource) => {
+    if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
+    const pending = state.pendingDisplayFrame;
+    state.pendingDisplayFrame = null;
+    if (pending === null && state.frame === frame) paintFrameResource(resource);
+    state.seeking = false;
+    state.activeDisplayFrame = null;
+    if (pending !== null && pending !== frame) {
+      startBrowserFrameSeek(pending);
+      return;
+    }
+    if (state.frame === frame) {
+      updateStatus();
+      draw();
+      prefetchAdjacentFrames(frame, token, serial);
+    }
+  }).catch(() => {
+    if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
+    const pending = state.pendingDisplayFrame;
+    state.pendingDisplayFrame = null;
+    state.seeking = false;
+    state.activeDisplayFrame = null;
+    if (pending !== null && pending !== frame) {
+      startBrowserFrameSeek(pending);
+      return;
+    }
+    updateStatus();
+    setStatus("フレーム画像の取得に失敗しました");
+  });
 }
 
 function seekFrame(frame) {
@@ -4440,12 +4593,23 @@ function seekFrame(frame) {
   const previousFrame = state.frame;
   state.frame = clampFrame(frame);
   if (state.frame !== previousFrame) state.seekDirection = state.frame > previousFrame ? 1 : -1;
-  const serial = ++state.seekSerial;
-  const token = state.frameCacheToken;
-
-  state.seeking = true;
   updateStatus();
   renderTable();
+
+  if (state.frameSource?.kind === "browser") {
+    if (state.seeking) {
+      state.pendingDisplayFrame = state.frame === state.activeDisplayFrame ? null : state.frame;
+      return;
+    }
+    startBrowserFrameSeek(state.frame);
+    return;
+  }
+
+  const serial = ++state.seekSerial;
+  const token = state.frameCacheToken;
+  state.seeking = true;
+  state.activeDisplayFrame = state.frame;
+  updateStatus();
 
   loadFrameForDisplay(state.frame, token).then((resource) => {
     if (serial !== state.seekSerial || token !== state.frameCacheToken) return;
@@ -4711,8 +4875,10 @@ function copySelectedTableCells(event = null) {
   navigator.clipboard.writeText(text)
     .then(() => setStatus("選択セルをコピーしました"))
     .catch(() => {
-      downloadText(text, `digitize_cells_${baseName(state.videoName) || "video"}.tsv`, "text/tab-separated-values");
-      setStatus("ブラウザ権限でコピーできなかったため選択セルをTSVで書き出しました");
+      downloadText(text, `digitize_cells_${baseName(state.videoName) || "video"}.tsv`, "text/tab-separated-values")
+        .then((exported) => setStatus(exported
+          ? "ブラウザ権限でコピーできなかったため選択セルをTSVで書き出しました"
+          : "TSVの書き出しをキャンセルしました"));
     });
   return true;
 }
@@ -4819,6 +4985,10 @@ function updateCurrentTableRow() {
 }
 
 function renderAll() {
+  if (IS_IOS_APP) {
+    updateStatus();
+    return;
+  }
   const selectedFrame = state.selected.frame ?? state.frame;
   const selectedMarker = state.selected.marker ?? state.activeMarker;
   if (els.pointStatus) els.pointStatus.value = pointStatusAt(selectedFrame, selectedMarker);
@@ -4833,7 +5003,7 @@ function renderAll() {
   renderMarkers();
   renderMarkerVisibility();
   renderTable();
-  renderAnalysis();
+  if (state.activeView === "analysis") renderAnalysis();
   draw();
 }
 
@@ -5077,7 +5247,7 @@ function exportCheckSummary() {
   ].join("\n");
 }
 
-function exportCsv() {
+async function exportCsv() {
   if (!state.ready) {
     setStatus("動画を開いてからCSV出力してください");
     return;
@@ -5126,15 +5296,15 @@ function exportCsv() {
     rows.push(row);
   }
   const csv = csvRowsText(rows);
-  downloadText(csv, `digitize_${baseName(state.videoName) || "video"}.csv`, "text/csv");
-  setStatus(transform ? "CSVを書き出しました（実長換算列あり）" : "CSVを書き出しました");
+  const exported = await downloadText(csv, `digitize_${baseName(state.videoName) || "video"}.csv`, "text/csv");
+  setStatus(exported ? (transform ? "CSVを書き出しました（実長換算列あり）" : "CSVを書き出しました") : "CSVの書き出しをキャンセルしました");
 }
 
 function csvRowsText(rows) {
   return rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
 }
 
-function exportAnalysisCsv() {
+async function exportAnalysisCsv() {
   if (!state.ready) {
     setStatus("動画を開いてから分析CSVを出力してください");
     return;
@@ -5214,11 +5384,11 @@ function exportAnalysisCsv() {
     )?.toFixed(6) ?? "",
   ]);
 
-  downloadText(csvRowsText(rows), `analysis_${baseName(state.videoName) || "video"}.csv`, "text/csv");
-  setStatus("分析CSVを書き出しました");
+  const exported = await downloadText(csvRowsText(rows), `analysis_${baseName(state.videoName) || "video"}.csv`, "text/csv");
+  setStatus(exported ? "分析CSVを書き出しました" : "分析CSVの書き出しをキャンセルしました");
 }
 
-function exportKinematicsCsv() {
+async function exportKinematicsCsv() {
   if (!state.ready) {
     setStatus("動画を開いてからキネマティクスCSVを出力してください");
     return;
@@ -5263,11 +5433,11 @@ function exportKinematicsCsv() {
       ...metadata,
     ]);
   }
-  downloadText(csvRowsText(rows), `kinematics_${baseName(state.videoName) || "video"}_${baseName(marker)}.csv`, "text/csv");
-  setStatus(`${marker} のキネマティクスCSVを書き出しました`);
+  const exported = await downloadText(csvRowsText(rows), `kinematics_${baseName(state.videoName) || "video"}_${baseName(marker)}.csv`, "text/csv");
+  setStatus(exported ? `${marker} のキネマティクスCSVを書き出しました` : "キネマティクスCSVの書き出しをキャンセルしました");
 }
 
-function exportSummaryCsv() {
+async function exportSummaryCsv() {
   if (!state.ready) {
     setStatus("動画を開いてからサマリーCSVを出力してください");
     return;
@@ -5328,11 +5498,11 @@ function exportSummaryCsv() {
     path.maxSpeed === null ? "" : path.maxSpeed.toFixed(6),
     ...[...intervalMap.values()],
   ];
-  downloadText(csvRowsText([headers, row]), `summary_${baseName(state.videoName) || "video"}.csv`, "text/csv");
-  setStatus("サマリーCSVを書き出しました");
+  const exported = await downloadText(csvRowsText([headers, row]), `summary_${baseName(state.videoName) || "video"}.csv`, "text/csv");
+  setStatus(exported ? "サマリーCSVを書き出しました" : "サマリーCSVの書き出しをキャンセルしました");
 }
 
-function exportRealCsv() {
+async function exportRealCsv() {
   if (!state.ready) {
     setStatus("動画を開いてから実長CSVを出力してください");
     return;
@@ -5356,8 +5526,8 @@ function exportRealCsv() {
     row.push(transform.unit);
     rows.push(row);
   }
-  downloadText(csvRowsText(rows), `real_coordinates_${baseName(state.videoName) || "video"}.csv`, "text/csv");
-  setStatus("実長換算CSVを書き出しました");
+  const exported = await downloadText(csvRowsText(rows), `real_coordinates_${baseName(state.videoName) || "video"}.csv`, "text/csv");
+  setStatus(exported ? "実長換算CSVを書き出しました" : "実長換算CSVの書き出しをキャンセルしました");
 }
 
 function escapeHtml(text) {
@@ -5370,7 +5540,7 @@ function escapeHtml(text) {
   }[char]));
 }
 
-function exportReportHtml() {
+async function exportReportHtml() {
   if (!state.ready) {
     setStatus("動画を開いてからレポートを出力してください");
     return;
@@ -5408,8 +5578,8 @@ ${table(["項目", "値"], qualityRows)}
 <h2>イベント</h2>
 ${table(["名前", "Frame", "Time(s)", "前との差(s)"], eventRows.length ? eventRows : [["-", "-", "-", "-"]])}
 </body></html>`;
-  downloadText(html, `report_${baseName(state.videoName) || "video"}.html`, "text/html");
-  setStatus("HTMLレポートを書き出しました");
+  const exported = await downloadText(html, `report_${baseName(state.videoName) || "video"}.html`, "text/html");
+  setStatus(exported ? "HTMLレポートを書き出しました" : "HTMLレポートの書き出しをキャンセルしました");
 }
 
 function analysisProtocol() {
@@ -5529,8 +5699,10 @@ async function copyTableToClipboard(event = null) {
     if (copyTextFallback(text)) {
       setStatus("表をコピーしました");
     } else {
-      downloadText(text, `digitize_table_${baseName(state.videoName) || "video"}.tsv`, "text/tab-separated-values");
-      setStatus("ブラウザ権限でコピーできなかったためTSVを書き出しました");
+      const exported = await downloadText(text, `digitize_table_${baseName(state.videoName) || "video"}.tsv`, "text/tab-separated-values");
+      setStatus(exported
+        ? "ブラウザ権限でコピーできなかったためTSVを書き出しました"
+        : "TSVの書き出しをキャンセルしました");
     }
   }
 }
@@ -5784,13 +5956,12 @@ function digitizeCoordinates(transform = null) {
   return records;
 }
 
-function digitizeSnapshot() {
+function digitizeSnapshot({ compact = false } = {}) {
   normalizeTrim();
   readCalibrationSettings();
   readCoordinateSystem();
   const transform = calibrationTransform();
-  const coordinates = digitizeCoordinates(transform);
-  return {
+  const snapshot = {
     version: 4,
     video: {
       name: state.videoName,
@@ -5853,20 +6024,23 @@ function digitizeSnapshot() {
       metadata: state.comparison.metadata,
       offset: Math.round(Number(els.comparisonOffset?.value) || 0),
     },
-    stats: digitizeStats(),
-    coordinates,
     points: state.points,
     point_flags: state.pointFlags,
     ai_suggestions: state.aiSuggestions,
     audit_log: state.audit,
   };
+  if (!compact) {
+    snapshot.stats = digitizeStats();
+    snapshot.coordinates = digitizeCoordinates(transform);
+  }
+  return snapshot;
 }
 
-function projectPayload() {
-  const digitize = digitizeSnapshot();
+function projectPayload({ compact = false } = {}) {
+  const digitize = digitizeSnapshot({ compact });
   return {
     schema: PROJECT_SCHEMA,
-    project_version: 6,
+    project_version: 7,
     saved_at: new Date().toISOString(),
     video_name: state.videoName,
     video_identity: state.videoIdentity,
@@ -5896,6 +6070,7 @@ function projectPayload() {
     },
     study_trials: state.studyTrials,
     comparison: digitize.comparison,
+    step_analysis: globalThis.VideoDigitizerStepAnalysis?.serialize?.() || null,
     ui_settings: {
       auto_advance: els.autoAdvance.checked,
       advance_mode: els.advanceMode.value,
@@ -5939,8 +6114,11 @@ function projectJsonText() {
 }
 
 function autosavePayload() {
-  const payload = projectPayload();
+  const payload = projectPayload({ compact: true });
   payload.storage_format = "compact_autosave_v1";
+  if (payload.step_analysis) {
+    payload.step_analysis = globalThis.VideoDigitizerStepAnalysis?.serialize?.({ compact: true }) || payload.step_analysis;
+  }
 
   // Autosave only needs the canonical point store. The portable project keeps
   // the duplicated, human-readable coordinate records for external tools.
@@ -5964,6 +6142,15 @@ function autosavePayload() {
 
 function autosaveJsonText() {
   return JSON.stringify(autosavePayload());
+}
+
+function nativeRecoveryJsonText() {
+  const payload = autosavePayload();
+  payload.storage_format = "native_recovery_v1";
+  if (payload.step_analysis) {
+    payload.step_analysis = globalThis.VideoDigitizerStepAnalysis?.serialize?.() || payload.step_analysis;
+  }
+  return JSON.stringify(payload);
 }
 
 const CLOUD_POINT_QUALITY_FIELDS = [
@@ -6073,7 +6260,7 @@ function cloudDigitizePayload() {
   };
 }
 
-function saveProjectPackage() {
+async function saveProjectPackage() {
   const payload = projectPayload();
   payload.package = {
     format: "video_digitizer_portable_project_v1",
@@ -6081,11 +6268,15 @@ function saveProjectPackage() {
     video_embedded: false,
     video_reference: state.videoIdentity,
   };
-  downloadText(
+  const exported = await downloadText(
     JSON.stringify(payload, null, 2),
     `digitize_${baseName(state.videoName) || "project"}.vdproj`,
     "application/json",
   );
+  if (!exported) {
+    setStatus("プロジェクトパッケージの書き出しをキャンセルしました");
+    return;
+  }
   recordAudit("save_project_package", { video_digest: state.videoIdentity?.digest || "" });
   setStatus("軽量プロジェクトパッケージを書き出しました");
 }
@@ -6122,9 +6313,9 @@ function diagnosticPayload() {
   };
 }
 
-function downloadDiagnostics() {
-  downloadText(JSON.stringify(diagnosticPayload(), null, 2), `video_digitizer_diagnostics_${Date.now()}.json`, "application/json");
-  setStatus("動画本体と座標を含まない診断情報を書き出しました");
+async function downloadDiagnostics() {
+  const exported = await downloadText(JSON.stringify(diagnosticPayload(), null, 2), `video_digitizer_diagnostics_${Date.now()}.json`, "application/json");
+  setStatus(exported ? "動画本体と座標を含まない診断情報を書き出しました" : "診断情報の書き出しをキャンセルしました");
 }
 
 async function checkUpdates() {
@@ -6165,7 +6356,9 @@ function updateAccountUI() {
   els.deleteCloudProject.hidden = !cloudAvailable;
   els.deleteCloudProject.disabled = !state.cloud.generation;
   if (!localApp) {
-    els.accountStatus.textContent = "Googleログインとアカウント別保存はMacアプリ版で利用できます。";
+    els.accountStatus.textContent = IS_IOS_APP
+      ? "iOS版はログイン不要で、分析データをこの端末内に保存します。"
+      : "Googleログインとアカウント別保存はMacアプリ版で利用できます。";
   } else if (account.authenticated) {
     const saved = account.lastSavedAt ? ` / 自動保存 ${new Date(account.lastSavedAt).toLocaleTimeString()}` : "";
     const cloud = state.cloud.configured
@@ -6411,7 +6604,7 @@ async function finalizeCloudProject() {
 }
 
 async function writeAccountAutosave(text) {
-  if (state.sourceMode !== "api" || !state.account.authenticated) return;
+  if (state.sourceMode !== "api" || !state.account.authenticated) return false;
   try {
     const response = await fetch(localApiUrl("account-cache"), {
       method: "POST",
@@ -6423,16 +6616,77 @@ async function writeAccountAutosave(text) {
     const result = await response.json();
     state.account.lastSavedAt = Number(result.saved_at || 0) * 1000;
     updateAccountUI();
+    return true;
   } catch (_error) {
     // Browser IndexedDB remains the fallback if the account cache is unavailable.
+    return false;
   }
 }
 
-function writeAutosave() {
-  if (!state.dirty && !state.ready && Object.keys(state.points).length === 0) return;
+function autosaveRevisionKey() {
+  return [
+    state.autosaveRevision,
+    state.frame,
+    state.analysisFrame,
+    state.activeView,
+    state.audit.length,
+    globalThis.VideoDigitizerStepAnalysis?.frame ?? 0,
+    state.ready ? state.videoIdentity?.digest || state.videoIdentity?.name || state.videoName : "",
+  ].join(":");
+}
+
+async function performAutosave(options = {}) {
+  if (!state.dirty && !state.ready && Object.keys(state.points).length === 0) return true;
+  const revisionKey = autosaveRevisionKey();
+  if (!options.fullRecovery && revisionKey === lastAutosaveRevisionKey) return true;
   const text = autosaveJsonText();
-  globalThis.VideoDigitizerStorage?.set(AUTOSAVE_KEY, text).catch(() => {});
-  writeAccountAutosave(text);
+  const localSave = globalThis.VideoDigitizerStorage?.set
+    ? globalThis.VideoDigitizerStorage.set(AUTOSAVE_KEY, text).then(() => true).catch(() => false)
+    : Promise.resolve(false);
+  const accountSave = writeAccountAutosave(text);
+  let nativeSave = Promise.resolve(false);
+  if (IS_IOS_APP && globalThis.VideoDigitizerNative?.saveRecovery) {
+    // Periodic saves stay compact. The background lifecycle first suspends
+    // analysis and requests a full snapshot, avoiding repeated pose-history
+    // serialization and bridge copies while the foreground app is idle.
+    const candidate = options.fullRecovery ? nativeRecoveryJsonText() : text;
+    const nativeText = new Blob([candidate]).size <= MAX_NATIVE_RECOVERY_BYTES ? candidate : text;
+    nativeSave = globalThis.VideoDigitizerNative.saveRecovery(nativeText).then((saved) => (
+      saved ? true : globalThis.VideoDigitizerNative.saveRecovery(text)
+    )).catch(() => globalThis.VideoDigitizerNative.saveRecovery(text).catch(() => false));
+  }
+  const results = await Promise.all([localSave, accountSave, nativeSave]);
+  const saved = results.some(Boolean);
+  const requiredDestinationsSaved = (!globalThis.VideoDigitizerStorage?.set || results[0])
+    && (!IS_IOS_APP || !globalThis.VideoDigitizerNative?.saveRecovery || results[2]);
+  if (requiredDestinationsSaved) lastAutosaveRevisionKey = revisionKey;
+  if (!saved) setStatus("自動保存に失敗しました。プロジェクトを共有シートから保存してください");
+  return saved;
+}
+
+function writeAutosave(options = {}) {
+  const result = autosaveQueue.catch(() => false).then(() => performAutosave(options));
+  autosaveQueue = result.catch(() => false);
+  return result;
+}
+
+function newestAutosave(...values) {
+  let selected = null;
+  let selectedAt = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (typeof value !== "string" || !value) continue;
+    let savedAt = 0;
+    try {
+      savedAt = Date.parse(JSON.parse(value)?.saved_at || "") || 0;
+    } catch (_error) {
+      continue;
+    }
+    if (selected === null || savedAt >= selectedAt) {
+      selected = value;
+      selectedAt = savedAt;
+    }
+  }
+  return selected;
 }
 
 async function accountAutosaveText() {
@@ -6453,11 +6707,14 @@ async function restoreAutosave(options = {}) {
     }
   }
   if (!raw && !options.accountOnly) {
-    try {
-      raw = await globalThis.VideoDigitizerStorage?.get(AUTOSAVE_KEY);
-    } catch (_error) {
-      // Continue to the one-time localStorage migration.
-    }
+    const browserLoad = globalThis.VideoDigitizerStorage?.get
+      ? globalThis.VideoDigitizerStorage.get(AUTOSAVE_KEY).catch(() => null)
+      : Promise.resolve(null);
+    const nativeLoad = IS_IOS_APP && globalThis.VideoDigitizerNative?.loadRecovery
+      ? globalThis.VideoDigitizerNative.loadRecovery().catch(() => null)
+      : Promise.resolve(null);
+    const [browserRaw, nativeRaw] = await Promise.all([browserLoad, nativeLoad]);
+    raw = newestAutosave(browserRaw, nativeRaw);
   }
   if (!raw && !options.accountOnly) {
     try {
@@ -6516,7 +6773,11 @@ async function saveProjectAs() {
     syncCloudDigitize({ force: true });
     return;
   }
-  downloadText(text, defaultProjectFilename(), "application/json");
+  const saved = await downloadText(text, defaultProjectFilename(), "application/json");
+  if (!saved) {
+    setStatus("保存をキャンセルしました");
+    return;
+  }
   cleanDirty();
   setStatus(`プロジェクトを書き出しました: ${payload.digitize.stats.total_points}点`);
   syncCloudDigitize({ force: true });
@@ -6795,12 +7056,14 @@ function importTimestampFile(file) {
 }
 
 function loadProject(file) {
-  state.projectFileHandle = null;
-  state.projectFileName = file?.name || "";
+  const generation = ++state.projectLoadGeneration;
   readFileText(file, "プロジェクトファイル").then((text) => {
+    if (generation !== state.projectLoadGeneration) return;
     try {
       const payload = JSON.parse(String(text));
       if (!SUPPORTED_PROJECT_SCHEMAS.has(payload.schema)) throw new Error("unsupported schema");
+      state.projectFileHandle = null;
+      state.projectFileName = file?.name || "";
       const digitize = payload.digitize && typeof payload.digitize === "object" ? payload.digitize : {};
       const video = digitize.video && typeof digitize.video === "object" ? digitize.video : {};
       const expectedVideoIdentity = videoIdentityFromProject(payload, digitize);
@@ -6966,6 +7229,8 @@ function loadProject(file) {
       updateZoomToggleButton();
       els.fpsInput.value = String(state.fps);
       els.markerText.value = state.markers.join("\n");
+      globalThis.VideoDigitizerStepAnalysis?.restore?.(payload.step_analysis || null);
+      state.autosaveRevision += 1;
       cleanDirty();
       updateFrameModel();
       if (savedAnalysis.protocol) applyAnalysisProtocol(savedAnalysis.protocol);
@@ -6973,14 +7238,16 @@ function loadProject(file) {
       const matchText = state.ready ? "現在の動画と照合しました" : "動画は別途開いてください";
       setStatus(`プロジェクトを読み込みました。${matchText}`);
     } catch (error) {
-      setStatus(`読込に失敗しました: ${error.message}`);
+      if (generation === state.projectLoadGeneration) setStatus(`読込に失敗しました: ${error.message}`);
     }
   }).catch((error) => {
-    setStatus(`読込に失敗しました: ${error.message}`);
+    if (generation === state.projectLoadGeneration) setStatus(`読込に失敗しました: ${error.message}`);
   });
 }
 
 function downloadText(text, filename, type) {
+  const nativeExport = globalThis.VideoDigitizerNative?.exportText?.({ text, filename, mimeType: type });
+  if (nativeExport) return Promise.resolve(nativeExport);
   const blob = new Blob([text], { type: `${type};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -6990,6 +7257,7 @@ function downloadText(text, filename, type) {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+  return Promise.resolve(true);
 }
 
 function baseName(name) {
@@ -7035,6 +7303,7 @@ async function uploadVideoFile(file) {
 
 function resetVideoForLoad() {
   const pendingTrim = state.pendingTrim;
+  globalThis.VideoDigitizerStepAnalysis?.onVideoReset?.();
   state.frameSource?.close?.();
   state.frameSource = null;
   if (state.videoUrl) URL.revokeObjectURL(state.videoUrl);
@@ -7047,10 +7316,12 @@ function resetVideoForLoad() {
   state.frameCount = 0;
   state.frameCountEstimated = false;
   state.frameCountMethod = "";
+  state.frameTimingMode = "";
   state.trimStart = 0;
   state.trimEnd = 0;
   state.videoWidth = 0;
   state.videoHeight = 0;
+  state.videoDurationSec = 0;
   state.videoIdentity = null;
   const frameContext = els.frameImage.getContext("2d");
   frameContext?.clearRect(0, 0, els.frameImage.width, els.frameImage.height);
@@ -7066,6 +7337,7 @@ function applyLoadedVideo(metadata, videoIdentity, pendingTrim) {
   state.frameCount = Math.max(1, Number(metadata.frame_count) || 1);
   state.frameCountEstimated = Boolean(metadata.frame_count_estimated);
   state.frameCountMethod = String(metadata.frame_count_method || (usesBrowserFrameSource() ? "duration_fps_estimate" : "decoder"));
+  state.frameTimingMode = String(metadata.timing_mode || (usesBrowserFrameSource() ? "constant_fps" : "decoder"));
   state.trimStart = pendingTrim ? pendingTrim.start : 0;
   state.trimEnd = pendingTrim ? pendingTrim.end : maxFrameIndex();
   state.frame = pendingTrim ? pendingTrim.frame : 0;
@@ -7074,31 +7346,48 @@ function applyLoadedVideo(metadata, videoIdentity, pendingTrim) {
   normalizeTrim();
   state.videoWidth = Math.max(1, Number(metadata.width) || 1);
   state.videoHeight = Math.max(1, Number(metadata.height) || 1);
+  state.videoDurationSec = Math.max(0, Number(metadata.duration) || state.frameCount / Math.max(0.001, state.fps));
   els.frameImage.width = state.videoWidth;
   els.frameImage.height = state.videoHeight;
   els.fpsInput.value = String(Number(state.fps.toFixed(6)));
   if (!Object.keys(state.frameTimestamps).length) {
-    els.timingStatus.textContent = metadata.timing_mode === "per_frame_container"
+    els.timingStatus.textContent = state.frameTimingMode === "per_frame_container"
       ? `時刻: 動画内の実フレーム時刻 ${state.frameCount}F`
-      : "時刻: 固定FPSとして計算";
+      : IS_IOS_APP
+        ? "時刻: 固定FPSとして計算（正確なAI分析は利用不可）"
+        : "時刻: 固定FPSとして計算";
   }
   state.ready = true;
-  seekFrame(state.frame);
+  state.videoLoading = false;
+  if (els.iosVideoPlaceholder) els.iosVideoPlaceholder.hidden = true;
+  els.stepAnalysisView?.setAttribute("aria-busy", "false");
+  markDirty();
+  // The iOS step preview owns the decoder; do not queue invisible digitizer
+  // frames and adjacent-frame prefetch ahead of its first frame or AI run.
+  if (!IS_IOS_APP) seekFrame(state.frame);
+  globalThis.VideoDigitizerStepAnalysis?.onVideoLoaded?.();
 }
 
-async function setVideoSource(file) {
+function ownsVideoLoad(generation) {
+  return generation === state.videoLoadGeneration;
+}
+
+async function setVideoSource(file, generation = ++state.videoLoadGeneration) {
   if (!file) throw new Error("動画ファイルが選択されていません");
-  if (usesBrowserFrameSource()) return setVideoSourceInBrowser(file);
+  if (usesBrowserFrameSource()) return setVideoSourceInBrowser(file, generation);
+  if (!ownsVideoLoad(generation)) return false;
   const { pendingTrim, previousVideoName } = resetVideoForLoad();
   setStatus("動画の指紋を確認しています");
   let fileIdentity = null;
   try {
     fileIdentity = await videoIdentityFromFile(file);
   } catch (error) {
-    setStatus("ファイル指紋の取得に失敗しました。読み込みを優先します");
+    if (ownsVideoLoad(generation)) setStatus("ファイル指紋の取得に失敗しました。読み込みを優先します");
   }
+  if (!ownsVideoLoad(generation)) return false;
 
   const uploadResult = await uploadVideoFile(file);
+  if (!ownsVideoLoad(generation)) return false;
   const metadata = uploadResult.metadata || uploadResult;
   if (!fileIdentity) {
     fileIdentity = uploadResult.buffer
@@ -7116,6 +7405,7 @@ async function setVideoSource(file) {
           codec: String(metadata.codec || ""),
         };
   }
+  if (!ownsVideoLoad(generation)) return false;
   const serverIdentity = metadata.identity && typeof metadata.identity === "object" ? metadata.identity : {};
   const videoIdentity = {
     ...fileIdentity,
@@ -7135,45 +7425,73 @@ async function setVideoSource(file) {
     updateStatus();
     draw();
     setStatus("動画の読み込みをキャンセルしました");
-    return;
+    return false;
   }
   state.frameSource = new VideoDigitizerFrames.ApiFrameSource((frame) => frameUrl(frame));
   applyLoadedVideo({ ...metadata, name: file.name }, videoIdentity, pendingTrim);
   setStatus("動画を開きました");
+  return true;
 }
 
-async function setVideoSourceInBrowser(file) {
-  const { pendingTrim, previousVideoName } = resetVideoForLoad();
-  setStatus("動画をブラウザ内で開いています");
+async function setVideoSourceInBrowser(file, generation) {
+  setVideoPreparation("loading", "動画を読み込んでいます…", generation);
   globalThis.VideoDigitizerStorage?.requestPersistence?.().catch(() => {});
-  const opened = await VideoDigitizerFrames.BrowserFrameSource.open(file, Number(els.fpsInput.value) || state.fps);
-  const metadata = opened.metadata;
-  const videoIdentity = await videoIdentityFromFile(file, metadata);
-  if (state.expectedVideoIdentity && !confirmVideoMismatch(state.expectedVideoIdentity, videoIdentity, "開こうとしている")) {
-    opened.source.close();
-    state.videoName = previousVideoName;
-    state.videoIdentity = null;
-    updateStatus();
-    draw();
-    setStatus("動画の読み込みをキャンセルしました");
-    return;
+  let opened = null;
+  try {
+    opened = await VideoDigitizerFrames.BrowserFrameSource.open(file, Number(els.fpsInput.value) || state.fps, {
+      signal: state.videoLoadController?.signal,
+      onProgress: (message) => setVideoPreparation("loading", message, generation),
+    });
+    if (!ownsVideoLoad(generation)) {
+      opened.source.close();
+      return false;
+    }
+    const metadata = opened.metadata;
+    setVideoPreparation("loading", "動画の読み込みが完了しました。分析用の識別情報を確認しています…", generation);
+    const videoIdentity = await withVideoLoadDeadline(videoIdentityFromFile(file, metadata), state.videoLoadController?.signal);
+    if (!ownsVideoLoad(generation)) {
+      opened.source.close();
+      return false;
+    }
+    if (state.expectedVideoIdentity && !confirmVideoMismatch(state.expectedVideoIdentity, videoIdentity, "開こうとしている")) {
+      opened.source.close();
+      setStatus("動画の読み込みをキャンセルしました");
+      return false;
+    }
+    const { pendingTrim } = resetVideoForLoad();
+    if (!ownsVideoLoad(generation)) {
+      opened.source.close();
+      return false;
+    }
+    state.frameSource = opened.source;
+    applyLoadedVideo({ ...metadata, name: file.name }, videoIdentity, pendingTrim);
+    recordAudit("load_browser_video", { name: file.name, size: file.size, digest: videoIdentity.digest || "" });
+    setStatus("動画をブラウザ内で開きました。動画は外部へ送信されません");
+    if (els.iosVideoLoadStatus) {
+      els.iosVideoLoadStatus.textContent = `${file.name} · ${state.frameCount}フレーム · 端末内で分析します`;
+      els.iosVideoLoadStatus.dataset.phase = "ready";
+    }
+    return true;
+  } catch (error) {
+    opened?.source?.close?.();
+    if (!ownsVideoLoad(generation)) return false;
+    throw error;
   }
-  state.frameSource = opened.source;
-  applyLoadedVideo({ ...metadata, name: file.name }, videoIdentity, pendingTrim);
-  recordAudit("load_browser_video", { name: file.name, size: file.size, digest: videoIdentity.digest || "" });
-  setStatus("動画をブラウザ内で開きました。動画は外部へ送信されません");
 }
 
-async function setVideoSourceFromNativePicker() {
+async function setVideoSourceFromNativePicker(generation = ++state.videoLoadGeneration) {
+  if (!ownsVideoLoad(generation)) return false;
   const { pendingTrim, previousVideoName } = resetVideoForLoad();
   setStatus("動画を選択してください。クラウド上の動画はダウンロードを試します");
   const response = await fetch(`./api/select-video?${sessionQuery()}`, {
     method: "POST",
     cache: "no-store",
   });
+  if (!ownsVideoLoad(generation)) return false;
   if (!response.ok) throw new Error(await response.text());
 
   const metadata = await response.json();
+  if (!ownsVideoLoad(generation)) return false;
   const identity = metadata.identity || {};
   const videoIdentity = {
     name: String(identity.name || metadata.name || ""),
@@ -7193,21 +7511,24 @@ async function setVideoSourceFromNativePicker() {
     updateStatus();
     draw();
     setStatus("動画の読み込みをキャンセルしました");
-    return;
+    return false;
   }
   state.frameSource = new VideoDigitizerFrames.ApiFrameSource((frame) => frameUrl(frame));
   applyLoadedVideo(metadata, videoIdentity, pendingTrim);
   setStatus("動画を開きました");
+  return true;
 }
 
 async function restoreRecentLocalVideo() {
   if (state.sourceMode !== "api" || !state.account.authenticated || state.ready) return;
+  const generation = ++state.videoLoadGeneration;
   let response;
   try {
     response = await fetch(localApiUrl("recent-video"), { cache: "no-store" });
   } catch (_error) {
     return;
   }
+  if (!ownsVideoLoad(generation)) return;
   if (response.status === 401 || response.status === 404) return;
   if (!response.ok) {
     setStatus("前回の動画を再接続できませんでした。動画を選び直してください");
@@ -7215,6 +7536,7 @@ async function restoreRecentLocalVideo() {
   }
 
   const metadata = await response.json();
+  if (!ownsVideoLoad(generation)) return;
   const identity = metadata.identity || {};
   const videoIdentity = {
     name: String(identity.name || metadata.name || ""),
@@ -7251,18 +7573,40 @@ function openVideoWithFallback() {
 }
 
 els.openVideoButton.addEventListener("click", openVideoWithFallback);
+els.iosChooseVideoButton?.addEventListener("click", openVideoWithFallback);
+els.iosRecordVideoButton?.addEventListener("click", () => els.iosRecordVideoFile?.click());
 els.digitizeTab.addEventListener("click", () => setActiveView("digitize"));
 els.analysisTab.addEventListener("click", () => setActiveView("analysis"));
+els.stepAnalysisTab?.addEventListener("click", () => setActiveView("step_analysis"));
 
-els.videoFile.addEventListener("change", (event) => {
+async function loadSelectedVideo(event) {
   const file = event.target.files?.[0];
+  event.target.value = "";
   if (!file) return;
-  setVideoSource(file).catch((error) => {
-    state.ready = false;
-    setStatus(`動画を開けませんでした: ${error.message}`);
+  const generation = ++state.videoLoadGeneration;
+  state.videoLoadController?.abort();
+  state.videoLoadController = new AbortController();
+  setVideoPreparation("loading", `${file.name} を読み込んでいます…`, generation);
+  try {
+    const loaded = await setVideoSource(file, generation);
+    if (!loaded) setVideoPreparation("idle", "動画の読み込みをキャンセルしました。動画を選び直してください", generation);
+  } catch (error) {
+    if (!ownsVideoLoad(generation)) return;
+    // Browser opening is transactional: a failed replacement must not destroy
+    // the previous video's source or saved analysis.
+    setVideoPreparation("error", `動画を開けませんでした: ${error.message}`, generation);
     draw();
-  });
-});
+  } finally {
+    if (ownsVideoLoad(generation)) {
+      state.videoLoading = false;
+      state.videoLoadController = null;
+      els.stepAnalysisView?.setAttribute("aria-busy", "false");
+    }
+  }
+}
+
+els.videoFile.addEventListener("change", loadSelectedVideo);
+els.iosRecordVideoFile?.addEventListener("change", loadSelectedVideo);
 
 els.canvas.addEventListener("mousemove", (event) => {
   const pos = canvasToSource(event);
@@ -7551,6 +7895,7 @@ els.calibUnit.addEventListener("input", () => {
 });
 els.projectFile.addEventListener("change", (event) => {
   const file = event.target.files?.[0];
+  event.target.value = "";
   if (file) loadProject(file);
 });
 els.calibrationFile.addEventListener("change", (event) => {
@@ -7592,14 +7937,33 @@ window.addEventListener("resize", draw);
 window.setInterval(writeAutosave, 60_000);
 window.setInterval(syncCloudDigitize, 5 * 60_000);
 window.addEventListener("beforeunload", writeAutosave);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && !IS_IOS_APP) writeAutosave();
+});
+globalThis.VideoDigitizerLifecycle = {
+  async prepareForBackground() {
+    if (state.backgroundJob) {
+      state.backgroundJob.cancelled = true;
+      if (state.backgroundJob.serverJobId) cancelServerAIJob(state.backgroundJob.serverJobId);
+    }
+    const suspended = await globalThis.VideoDigitizerStepAnalysis?.suspend?.();
+    const saved = await writeAutosave({ fullRecovery: suspended !== false });
+    return saved !== false;
+  },
+  resumeFromBackground() {
+    draw();
+    globalThis.VideoDigitizerStepAnalysis?.resume?.();
+    return true;
+  },
+};
 window.addEventListener("copy", (event) => {
-  if (isEditableTarget(event.target) || !state.ready) return;
+  if (state.activeView === "step_analysis" || isEditableTarget(event.target) || !state.ready) return;
   if (String(window.getSelection?.() || "").trim()) return;
   if (hasTableSelection() && copySelectedTableCells(event)) return;
   copyTableToClipboard(event);
 });
 window.addEventListener("paste", (event) => {
-  if (isEditableTarget(event.target)) return;
+  if (state.activeView === "step_analysis" || isEditableTarget(event.target)) return;
   pasteTableFromClipboard(event);
 });
 window.addEventListener("mouseup", () => {
@@ -7607,6 +7971,16 @@ window.addEventListener("mouseup", () => {
 });
 window.addEventListener("keydown", (event) => {
   if (isEditableTarget(event.target)) return;
+  if (state.activeView === "step_analysis") {
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      event.preventDefault();
+      globalThis.VideoDigitizerStepAnalysis?.setFrame?.(globalThis.VideoDigitizerStepAnalysis.frame + (event.key === "ArrowDown" ? 10 : 1));
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      event.preventDefault();
+      globalThis.VideoDigitizerStepAnalysis?.setFrame?.(globalThis.VideoDigitizerStepAnalysis.frame - (event.key === "ArrowUp" ? 10 : 1));
+    }
+    return;
+  }
   if (event.metaKey || event.ctrlKey) {
     if (event.key.toLowerCase() === "z") {
       event.preventDefault();
@@ -7693,12 +8067,70 @@ updateZoomToggleButton();
 updateAppMode();
 els.skeletonText.value = skeletonTextFromSegments();
 els.appVersion.textContent = `Version ${APP_VERSION}`;
+globalThis.VideoDigitizerStepAnalysis?.init?.({
+  apiUrl: localApiUrl,
+  frameTime(frame) {
+    if (IS_IOS_APP) return state.frameSource?.timeForFrame?.(frame) ?? frame / Math.max(0.001, state.fps);
+    return frameToTime(frame);
+  },
+  playbackTime: videoPlaybackTime,
+  frameTimestamps(start, end) {
+    const output = {};
+    if (IS_IOS_APP) return output;
+    for (const [frame, time] of Object.entries(state.frameTimestamps)) {
+      const index = Number(frame);
+      if (index >= start && index <= end && Number.isFinite(Number(time))) output[frame] = Number(time);
+    }
+    return output;
+  },
+  getFrameBitmap: getStepFrameBitmap,
+  getMetadata: readMetadata,
+  getVideoContext() {
+    return {
+      ready: state.ready,
+      loading: state.videoLoading,
+      videoName: state.videoName,
+      videoIdentity: state.videoIdentity,
+      playbackFps: state.fps,
+      frameCount: state.frameCount,
+      width: state.videoWidth,
+      height: state.videoHeight,
+      durationSec: state.videoDurationSec,
+      trimStart: state.trimStart,
+      trimEnd: state.trimEnd,
+      sourceMode: state.sourceMode,
+      timingMode: state.frameTimingMode,
+      frameCountEstimated: state.frameCountEstimated,
+      frameCountMethod: state.frameCountMethod,
+    };
+  },
+  markDirty,
+  recordAudit,
+  calibrationPoint(point) {
+    return IS_IOS_APP ? null : transformPoint(point, calibrationTransform());
+  },
+});
+if (IS_IOS_APP) {
+  document.title = "AIステップ分析";
+  const inputPanel = $("stepVideoInputPanel");
+  const viewerPanel = document.querySelector("#stepAnalysisView .step-viewer-panel");
+  if (inputPanel && viewerPanel) inputPanel.after(viewerPanel);
+  for (const id of ["stepAdvancedSettings", "stepSecondaryActions", "stepMetricDetails", "stepEventDetails", "stepTimelineDetails"]) {
+    const disclosure = $(id);
+    if (disclosure) disclosure.open = false;
+  }
+  setActiveView("step_analysis");
+}
 try {
   applyWorkspaceSettings(JSON.parse(localStorage.getItem(WORKSPACE_PRESET_KEY) || "{}"));
 } catch (_error) {
   applyWorkspaceSettings({});
 }
 renderAll();
+if (IOS_STORAGE_ORIGIN_CHANGED) {
+  setStatus("端末内保存領域を一時切替しました。復旧データを確認しています…");
+  globalThis.setTimeout(() => restoreAutosave({ localOnly: true }), 250);
+}
 refreshAITrackingCapabilities();
 refreshAccountStatus()
   .then(refreshCloudStatus)

@@ -6,22 +6,25 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-perf7" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-perf7" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-perf7" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-perf7" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-lite1" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-lite1" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-lite1" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-lite1" />
+    <script src="./native-bridge.js?v=2.2.0-ios1"></script>
   </head>
   <body>
     <main class="app">
       <header class="topbar">
         <div class="app-brand" aria-label="VideoDigitizer">
           <strong>VideoDigitizer</strong>
-          <span>2D Motion Lab</span>
+          <span class="desktop-only">2D Motion Lab</span>
+          <span class="ios-only ios-brand-subtitle">AIステップ分析</span>
         </div>
 
         <div class="primary-actions">
           <button id="openVideoButton" class="primary-button" type="button">動画を開く</button>
           <input id="videoFile" class="hidden-file-input" type="file" accept="video/*" />
+          <input id="iosRecordVideoFile" class="hidden-file-input" type="file" accept="video/*" capture="environment" />
           <label class="file-button">
             プロジェクト読込
             <input id="projectFile" type="file" accept="application/json,.json,.vdproj" />
@@ -107,7 +110,10 @@
         </div>
         <div id="frameInfo">フレーム 0 / 0</div>
         <div id="markerInfo">マーカー 右手先</div>
-        <div id="appMode" class="mode-indicator">処理: 確認中</div>
+        <div class="mode-actions">
+          <div id="appMode" class="mode-indicator">処理: 確認中</div>
+          <a id="iosPrivacyLink" class="ios-privacy-link" href="./privacy.html" target="_blank" rel="noopener">プライバシー</a>
+        </div>
         <div id="statusText">準備完了</div>
       </section>
 
@@ -116,12 +122,13 @@
         <div id="resolutionInfo">座標: 元動画解像度基準</div>
       </section>
 
-      <nav class="view-tabs" aria-label="表示切替">
-        <button id="digitizeTab" class="active" type="button">デジタイズ</button>
-        <button id="analysisTab" type="button">分析</button>
+      <nav class="view-tabs" aria-label="表示切替" role="tablist">
+        <button id="digitizeTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="digitizeWorkspace">デジタイズ</button>
+        <button id="analysisTab" type="button" role="tab" aria-selected="false" aria-controls="analysisView">分析</button>
+        <button id="stepAnalysisTab" type="button" role="tab" aria-selected="false" aria-controls="stepAnalysisView">ステップ分析</button>
       </nav>
 
-      <section id="digitizeWorkspace" class="workspace">
+      <section id="digitizeWorkspace" class="workspace" role="tabpanel" aria-labelledby="digitizeTab">
         <div class="viewer">
           <canvas id="frameImage" aria-label="動画フレーム"></canvas>
           <canvas id="videoCanvas"></canvas>
@@ -437,7 +444,278 @@
         </div>
       </section>
 
-      <section id="analysisView" class="analysis-view hidden">
+      <section id="stepAnalysisView" class="step-analysis-view hidden" role="tabpanel" aria-labelledby="stepAnalysisTab stepAnalysisTitle">
+        <section class="panel step-control-panel">
+          <div id="stepVideoInputPanel" class="step-video-input-panel">
+          <div class="step-heading-row">
+            <div>
+              <h2 id="stepAnalysisTitle"><span class="desktop-only">現場用AIステップ分析</span><span class="ios-only">動画からステップを推定</span></h2>
+              <p class="desktop-only">動画・イベント・結果に絞って、接地タイミングと基本ステップ指標を確認します。</p>
+            </div>
+            <span class="step-local-badge">端末内処理</span>
+          </div>
+
+          <section class="ios-only ios-video-input" aria-labelledby="iosVideoInputTitle">
+            <ol class="ios-workflow" aria-label="分析の流れ">
+              <li><span>1</span>動画</li>
+              <li><span>2</span>範囲</li>
+              <li><span>3</span>AI分析</li>
+              <li><span>4</span>結果</li>
+            </ol>
+            <h3 id="iosVideoInputTitle">動画を入れる・撮る</h3>
+            <div class="ios-video-input-actions">
+              <button id="iosChooseVideoButton" type="button">動画を選ぶ</button>
+              <button id="iosRecordVideoButton" type="button">動画を撮る</button>
+            </div>
+            <p class="ios-recording-hint">まずは短い動画で。1人の全身と足元が見えるように撮影してください。</p>
+            <div id="iosVideoLoadStatus" class="ios-video-load-status" role="status" aria-live="polite"></div>
+          </section>
+          </div>
+
+          <details id="stepAdvancedSettings" class="step-disclosure step-advanced-settings" open>
+            <summary>分析条件（範囲・撮影FPS）</summary>
+          <div class="step-settings-grid">
+            <label class="step-checkbox-field step-digitize-range-control">
+              <input id="stepUseDigitizeRange" type="checkbox" checked />
+              <span>デジタイズ範囲を使用</span>
+            </label>
+            <label class="field-block">
+              開始Frame
+              <input id="stepRangeStart" type="number" min="0" step="1" value="0" disabled />
+            </label>
+            <label class="field-block">
+              終了Frame
+              <input id="stepRangeEnd" type="number" min="0" step="1" value="0" disabled />
+            </label>
+            <label class="field-block">
+              撮影FPS
+              <input id="stepCaptureFps" type="number" min="1" max="10000" step="0.001" value="30" inputmode="decimal" />
+            </label>
+            <label class="step-checkbox-field">
+              <input id="stepFpsConfirmed" type="checkbox" />
+              <span>撮影FPSを確認済み</span>
+            </label>
+            <label class="field-block">
+              進行方向
+              <select id="stepDirection">
+                <option value="auto" selected>自動</option>
+                <option value="left_to_right">左から右</option>
+                <option value="right_to_left">右から左</option>
+              </select>
+            </label>
+            <label class="field-block step-backend-control">
+              AIバックエンド
+              <select id="stepBackend">
+                <option value="auto" selected>自動（標準AIを優先）</option>
+                <option value="mmpose">MMPose（標準）</option>
+                <option value="mediapipe">MediaPipe（軽量代替）</option>
+              </select>
+            </label>
+          </div>
+          </details>
+
+          <div class="step-action-bar">
+            <div id="stepReadinessStatus" class="ios-only step-readiness-status" role="status" aria-live="polite">動画を選ぶとAI分析を開始できます。</div>
+            <button id="stepRunAnalysis" class="primary-button" type="button">AI分析を実行</button>
+            <button id="stepCancelAnalysis" type="button" disabled>中止</button>
+            <details id="stepSecondaryActions" class="step-disclosure step-secondary-actions" open>
+              <summary>対象者の指定・結果の書き出し</summary>
+              <div class="step-secondary-action-list">
+                <button id="stepSelectSubject" type="button">対象者を選ぶ</button>
+                <button id="stepClearCache" type="button">分析キャッシュを削除</button>
+                <span class="step-action-spacer" aria-hidden="true"></span>
+                <button id="stepExportCsv" type="button" disabled>CSVを書き出す</button>
+                <button id="stepExportJson" type="button" disabled>JSONを書き出す</button>
+              </div>
+            </details>
+          </div>
+
+          <div class="step-progress-row">
+            <div class="step-progress-meter">
+              <progress id="stepProgress" max="100" value="0">0%</progress>
+              <span id="stepProgressText" aria-hidden="true"></span>
+            </div>
+            <div>
+              <div id="stepStatus" class="step-status" role="status" aria-live="polite">動画を開いて分析条件を確認してください</div>
+              <div id="stepBackendStatus" class="step-backend-status">標準AIの状態を確認中</div>
+            </div>
+          </div>
+        </section>
+
+        <div class="step-main-grid">
+          <section class="panel step-viewer-panel" aria-label="ステップ分析動画">
+            <div class="ios-only step-trim-heading">
+              <h2>分析する時間・画像範囲</h2>
+              <p>必要な部分だけを選んで、AIに渡せます。</p>
+            </div>
+            <div id="stepCanvasStack" class="step-video-stage">
+              <canvas id="stepFrameCanvas" aria-label="ステップ分析の動画フレーム"></canvas>
+              <canvas id="stepOverlayCanvas" aria-label="対象者と骨格のオーバーレイ"></canvas>
+              <div id="stepFrameBadge" class="step-frame-badge">Frame 0 / Step -</div>
+              <div id="iosVideoPlaceholder" class="ios-only ios-video-placeholder">
+                <span class="ios-preview-symbol" aria-hidden="true">▶</span>
+                <strong>動画のプレビュー</strong>
+                <span>選択・撮影した動画をここに表示します</span>
+              </div>
+            </div>
+            <div id="stepPreviewStatus" class="ios-only step-preview-status" role="status" aria-live="polite"></div>
+
+            <div class="step-playback-controls">
+              <button id="stepPrevFrame" type="button" aria-label="前のフレーム">前</button>
+              <button id="stepPlay" class="step-play-button" type="button" aria-pressed="false">再生</button>
+              <button id="stepNextFrame" type="button" aria-label="次のフレーム">次</button>
+              <input id="stepFrameSlider" type="range" min="0" max="0" value="0" aria-label="ステップ分析フレーム" />
+              <label class="field-block step-frame-input-field">
+                Frame
+                <input id="stepFrameInput" type="number" min="0" step="1" value="0" inputmode="numeric" />
+              </label>
+            </div>
+
+            <section id="stepTrimControls" class="ios-only step-trim-controls" aria-label="分析範囲のトリミング" hidden>
+              <div class="step-trim-section-title">
+                <h3>時間の範囲</h3>
+                <button id="stepResetTimeTrim" class="step-reset-trim" type="button" disabled>全時間に戻す</button>
+              </div>
+              <p class="step-trim-time-help">動画の再生時間（秒）で指定します。</p>
+              <div class="step-trim-time-grid">
+                <div class="step-trim-time-field">
+                  <label class="field-block" for="stepTrimStartTime">開始（秒）</label>
+                  <input id="stepTrimStartTime" type="number" min="0" step="any" value="0" inputmode="decimal" disabled />
+                  <button id="stepTrimToCurrentStart" type="button" disabled>現在の位置を開始に</button>
+                </div>
+                <div class="step-trim-time-field">
+                  <label class="field-block" for="stepTrimEndTime">終了（秒）</label>
+                  <input id="stepTrimEndTime" type="number" min="0" step="any" value="0" inputmode="decimal" disabled />
+                  <button id="stepTrimToCurrentEnd" type="button" disabled>現在の位置を終了に</button>
+                </div>
+              </div>
+              <div id="stepTrimStatus" class="step-trim-status" role="status" aria-live="polite">動画を選ぶと時間の範囲を設定できます。</div>
+
+              <div class="step-trim-section-title step-crop-section-title">
+                <h3>画像の範囲</h3>
+                <button id="stepResetCrop" class="step-reset-trim" type="button" disabled>全画面に戻す</button>
+              </div>
+              <button id="stepSelectCrop" class="step-select-crop" type="button" aria-pressed="false" disabled>動画の上で範囲を囲む</button>
+              <p class="step-crop-help">ボタンを押し、動画の上を1本指でドラッグ。分析中の全身・足元が入るように囲んでください。</p>
+              <div id="stepCropStatus" class="step-trim-status" role="status" aria-live="polite">画像全体を分析します。</div>
+              <p class="step-trim-original-note">分析する範囲だけを変更します。元の動画は変更しません。</p>
+            </section>
+
+            <details id="stepTimelineDetails" class="step-disclosure step-timeline-details" open>
+              <summary>接地イベント・品質タイムライン</summary>
+            <section class="step-timeline" aria-labelledby="stepTimelineTitle">
+              <div class="step-timeline-head">
+                <h3 id="stepTimelineTitle">イベントと品質区間</h3>
+                <div class="step-timeline-legend" aria-label="凡例">
+                  <span class="step-legend-left">左接地</span>
+                  <span class="step-legend-right">右接地</span>
+                  <span class="step-legend-review">要確認</span>
+                </div>
+              </div>
+              <div id="stepTimelineTrack" class="step-timeline-track" tabindex="0" aria-label="ステップイベント・品質タイムライン"></div>
+            </section>
+            </details>
+          </section>
+
+          <aside class="step-results-column" aria-label="ステップ分析結果">
+            <section class="panel step-quality-panel">
+              <div class="step-result-heading">
+                <h2>分析品質</h2>
+                <span id="stepQualityBadge" class="step-quality-badge" data-status="idle">未分析</span>
+              </div>
+              <ul id="stepQualityReasons" class="step-quality-reasons">
+                <li>分析を実行すると、要確認理由を表示します。</li>
+              </ul>
+            </section>
+
+            <section class="panel step-metrics-panel">
+              <h2><span class="desktop-only">基本指標</span><span class="ios-only">ステップパラメーター推定</span></h2>
+              <p class="ios-only ios-metric-note">AIによる推定値です。分析品質とあわせて確認してください。</p>
+              <div class="step-metric-grid">
+                <article class="step-metric-card">
+                  <span>歩数</span>
+                  <strong id="stepMetricCount">-</strong>
+                </article>
+                <article class="step-metric-card">
+                  <span>ケイデンス</span>
+                  <strong id="stepMetricCadence">-</strong>
+                  <small>steps/min</small>
+                </article>
+                <article class="step-metric-card">
+                  <span>平均ステップ時間</span>
+                  <strong id="stepMetricStepTime">-</strong>
+                  <small>s</small>
+                </article>
+                <article class="step-metric-card">
+                  <span>平均ストライド時間</span>
+                  <strong id="stepMetricStrideTime">-</strong>
+                  <small>s</small>
+                </article>
+              </div>
+              <details id="stepMetricDetails" class="step-disclosure step-metric-details" open>
+                <summary>左右差・ばらつきの詳細</summary>
+                <div class="step-stat-table-wrap">
+                <table class="step-stat-table">
+                  <thead>
+                    <tr>
+                      <th>指標</th>
+                      <th>平均(s)</th>
+                      <th>SD(s)</th>
+                      <th>CV(%)</th>
+                      <th>左平均(s)</th>
+                      <th>右平均(s)</th>
+                      <th>左右差(s)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stepMetricStats">
+                    <tr><td>ステップ時間</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                    <tr><td>ストライド時間</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                  </tbody>
+                </table>
+                </div>
+              </details>
+            </section>
+
+            <section class="panel step-events-panel">
+              <details id="stepEventDetails" class="step-disclosure step-event-details" open>
+                <summary>接地タイミングを確認・修正</summary>
+                <div class="step-event-details-content">
+              <div class="step-result-heading">
+                <h2>イベント編集</h2>
+                <div class="mini-actions">
+                  <button id="stepAddLeftContact" type="button">左接地を追加</button>
+                  <button id="stepAddRightContact" type="button">右接地を追加</button>
+                </div>
+              </div>
+              <p class="step-events-help">Frameを変更すると、元のAI値を残したまま修正履歴へ記録します。</p>
+              <div class="step-event-table-wrap">
+                <table class="step-event-table">
+                  <thead>
+                    <tr>
+                      <th>Step</th>
+                      <th>左右</th>
+                      <th>種類</th>
+                      <th>Frame</th>
+                      <th>Time(s)</th>
+                      <th>品質</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stepEventTableBody">
+                    <tr class="step-empty-row">
+                      <td colspan="7">イベントはまだありません</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+                </div>
+              </details>
+            </section>
+          </aside>
+        </div>
+      </section>
+
+      <section id="analysisView" class="analysis-view hidden" role="tabpanel" aria-labelledby="analysisTab">
         <section class="panel analysis-panel">
           <div class="panel-title-row">
             <h2>入力サマリー</h2>
@@ -606,10 +884,12 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-perf7"></script>
-    <script src="./pwa.js?v=2.2.0-perf7"></script>
-    <script src="./ai-pose.js?v=2.2.0-perf7"></script>
-    <script src="./point-tracker.js?v=2.2.0-perf7"></script>
-    <script src="./app.js?v=2.2.0-perf7"></script>
+    <script src="./frame-source.js?v=2.2.0-lite1"></script>
+    <script src="./pwa.js?v=2.2.0-lite1"></script>
+    <script src="./ai-pose.js?v=2.2.0-lite1"></script>
+    <script src="./point-tracker.js?v=2.2.0-lite1"></script>
+    <script src="./step-analysis-core.js?v=2.2.0-lite1"></script>
+    <script src="./step-analysis.js?v=2.2.0-lite1"></script>
+    <script src="./app.js?v=2.2.0-lite1"></script>
   </body>
 </html>
