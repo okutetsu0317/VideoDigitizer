@@ -254,11 +254,15 @@
 
     const result = mapped.length ? mapped : mediaTimes;
     result.sort((a, b) => a - b);
+    let mediaTimeOrigin = 0;
     if (!mapped.length && result.length) {
-      const first = result[0];
-      for (let index = 0; index < result.length; index += 1) result[index] -= first;
+      mediaTimeOrigin = result[0];
+      for (let index = 0; index < result.length; index += 1) result[index] -= mediaTimeOrigin;
     }
-    return Float64Array.from(result.filter((value) => Number.isFinite(value) && value >= 0));
+    return {
+      timestamps: Float64Array.from(result.filter((value) => Number.isFinite(value) && value >= 0)),
+      mediaTimeOrigin,
+    };
   }
 
   function videoTrackTiming(view, trak, movieTimeScale, quickTime = false) {
@@ -274,15 +278,16 @@
     if (!sampleSize || sampleSize.dataStart + 12 > sampleSize.end) return null;
     const sampleCount = view.getUint32(sampleSize.dataStart + 8);
     const ticks = samplePresentationTicks(view, stbl, sampleCount, quickTime);
-    const timestamps = presentationTimeline(
+    const timeline = presentationTimeline(
       ticks,
       trackTimeScale,
       editListEntries(view, trak),
       movieTimeScale,
     );
     return {
-      frameCount: timestamps?.length || sampleCount,
-      timestamps,
+      frameCount: timeline?.timestamps?.length || sampleCount,
+      timestamps: timeline?.timestamps || null,
+      mediaTimeOrigin: timeline?.mediaTimeOrigin || 0,
     };
   }
 
@@ -302,7 +307,7 @@
     const view = new DataView(buffer);
     const root = { dataStart: 0, end: view.byteLength };
     const movieTimeScale = mediaTimeScale(view, firstChild(view, root, "mvhd"));
-    let best = { frameCount: 0, timestamps: null };
+    let best = { frameCount: 0, timestamps: null, mediaTimeOrigin: 0 };
     for (const trak of childBoxes(view, root.dataStart, root.end).filter((box) => box.type === "trak")) {
       const timing = videoTrackTiming(view, trak, movieTimeScale, quickTime);
       if (timing && timing.frameCount > best.frameCount) best = timing;
@@ -339,6 +344,9 @@
       this.context = canvas.getContext("2d", { alpha: false, desynchronized: true });
       this.duration = Number(video.duration) || 0;
       this.frameTimes = timing.timestamps?.length ? timing.timestamps : null;
+      this.mediaTimeOrigin = Number.isFinite(Number(timing.mediaTimeOrigin))
+        ? Number(timing.mediaTimeOrigin) : 0;
+      this.browserMediaTimeOffset = null;
       this.exactFrameCount = Math.max(0, Math.round(Number(timing.frameCount) || 0));
       this.fps = this.exactFrameCount > 0 && this.duration > 0
         ? this.exactFrameCount / this.duration
@@ -392,10 +400,11 @@
           "動画の時刻情報を読み込めませんでした。端末に保存した動画を選び直してください", options.signal);
         source = new BrowserFrameSource(file, objectUrl, video, canvas, fps, timing);
         await withTimeout(source.detectFps(), 2500, "動画のFPSを確認できませんでした", options.signal);
-        if (source.frameTimes?.length && Number.isFinite(initialPresentation?.mediaTime)
+        const initialMediaTime = source._mediaTimeForTimeline(initialPresentation?.mediaTime, 0);
+        if (source.frameTimes?.length && Number.isFinite(initialMediaTime)
           && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
-          && source.frameForMediaTime(initialPresentation.mediaTime) === 0
-          && Math.abs(initialPresentation.mediaTime - source.timeForFrame(0)) < 0.000001) {
+          && source.frameForMediaTime(initialMediaTime) === 0
+          && Math.abs(initialMediaTime - source.timeForFrame(0)) < 0.000001) {
           source.presentedFrame = 0;
         }
         options.onProgress?.("最初のフレームを確認しています");
@@ -559,6 +568,21 @@
         return low - 1;
       }
       return low;
+    }
+
+    _mediaTimeForTimeline(mediaTime, targetFrame = null) {
+      const value = Number(mediaTime);
+      if (!Number.isFinite(value)) return value;
+      if (this.browserMediaTimeOffset === null && Number.isFinite(Number(targetFrame))) {
+        const expected = this.timeForFrame(targetFrame);
+        const rawError = Math.abs(value - expected);
+        const shiftedError = Math.abs((value - this.mediaTimeOrigin) - expected);
+        if (rawError <= 0.000001) this.browserMediaTimeOffset = 0;
+        else if (Math.abs(this.mediaTimeOrigin) > 0.000001 && shiftedError <= 0.000001) {
+          this.browserMediaTimeOffset = this.mediaTimeOrigin;
+        }
+      }
+      return value - (this.browserMediaTimeOffset || 0);
     }
 
     async _resetToFirstFrame() {
@@ -741,9 +765,10 @@
           const presented = this._waitForPresentationMetadata();
           const seeked = this._seekVideo(seekTime);
           const [, metadata] = await Promise.all([seeked, presented]);
-          const mediaTime = Number(metadata?.mediaTime);
+          const rawMediaTime = Number(metadata?.mediaTime);
+          const mediaTime = this._mediaTimeForTimeline(rawMediaTime, target);
           const actual = this.frameForMediaTime(mediaTime);
-          observed.push({ actual, mediaTime });
+          observed.push({ actual, mediaTime: rawMediaTime });
           if (actual === target) {
             // Nearest-frame lookup alone is not verification: if a malformed
             // timeline drops every other frame it can label an in-between
