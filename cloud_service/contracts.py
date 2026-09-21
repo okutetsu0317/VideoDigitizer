@@ -49,8 +49,9 @@ POINT_QUALITY_KEYS = {
     "anchor_start", "anchor_end", "model_id", "model_version", "runtime", "suggestion_id",
     "landmark_index", "generated_at", "accepted_at", "device", "input_resolution", "visible", "redetected",
 }
-POINT_FLAG_KEYS = {"status", "updated_at", "confidence", "model_id", "model_version"}
+POINT_FLAG_KEYS = {"status", "review_status", "updated_at", "confidence", "model_id", "model_version"}
 POINT_STATUSES = {"valid", "uncertain", "occluded", "out_of_frame", "unidentifiable", "excluded"}
+POINT_REVIEW_STATUSES = {"unreviewed", "confirmed"}
 
 
 class ContractError(ValueError):
@@ -242,7 +243,7 @@ def validate_cloud_payload(payload: Any) -> dict[str, Any]:
                 raise ContractError("Point coordinate is invalid") from error
             if not math.isfinite(x) or not math.isfinite(y):
                 raise ContractError("Point coordinate must be finite")
-            if point.get("src", "") not in {"", "manual", "interp", "ai", "track"}:
+            if point.get("src", "") not in {"", "manual", "copy", "interp", "ai", "track"}:
                 raise ContractError("Point source is invalid")
             quality = _object(point.get("quality", {}), "Point quality")
             _reject_unknown(quality, POINT_QUALITY_KEYS, "Point quality")
@@ -264,6 +265,8 @@ def validate_cloud_payload(payload: Any) -> dict[str, Any]:
             _reject_unknown(flag, POINT_FLAG_KEYS, "Point flag")
             if flag.get("status") not in POINT_STATUSES:
                 raise ContractError("Point flag status is invalid")
+            if flag.get("review_status") is not None and flag.get("review_status") not in POINT_REVIEW_STATUSES:
+                raise ContractError("Point review status is invalid")
 
     body = canonical_json(payload)
     if len(body) > MAX_UNCOMPRESSED_BYTES:

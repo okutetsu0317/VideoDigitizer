@@ -228,6 +228,8 @@ const els = {
   copyPrevPoint: $("copyPrevPoint"),
   pointStatus: $("pointStatus"),
   applyPointStatus: $("applyPointStatus"),
+  pointReviewStatus: $("pointReviewStatus"),
+  applyPointReviewStatus: $("applyPointReviewStatus"),
   copyPrevFrame: $("copyPrevFrame"),
   predictPoint: $("predictPoint"),
   trackNextPoint: $("trackNextPoint"),
@@ -1793,6 +1795,7 @@ function updateCompletionInfo() {
 
 function sourceTag(src, quality = {}) {
   if (src === "manual") return "M";
+  if (src === "copy") return "C";
   if (src === "interp") return "I";
   if (src === "ai") return "A";
   if (src === "track") {
@@ -1807,11 +1810,16 @@ function sourceTag(src, quality = {}) {
 
 const POINT_STATUS_LABELS = {
   valid: "通常",
-  uncertain: "要確認",
+  uncertain: "精度注意",
   occluded: "遮蔽",
   out_of_frame: "画面外",
   unidentifiable: "判別不能",
   excluded: "解析除外",
+};
+
+const POINT_REVIEW_LABELS = {
+  unreviewed: "未確認",
+  confirmed: "確認済み",
 };
 
 function pointStatusAt(frame, marker) {
@@ -1822,13 +1830,36 @@ function pointFlagAt(frame, marker) {
   return state.pointFlags[String(frame)]?.[marker] || null;
 }
 
+function defaultPointReviewStatus(frame, marker) {
+  const point = getPoint(frame, marker);
+  if (point) return point.src === "manual" ? "confirmed" : "unreviewed";
+  const flag = pointFlagAt(frame, marker);
+  if (flag?.model_id || flag?.model_version || Number.isFinite(Number(flag?.confidence))) return "unreviewed";
+  return isResolvedPointStatus(pointStatusAt(frame, marker)) ? "confirmed" : "unreviewed";
+}
+
+function pointReviewStatusAt(frame, marker) {
+  const explicit = pointFlagAt(frame, marker)?.review_status;
+  return POINT_REVIEW_LABELS[explicit] ? explicit : defaultPointReviewStatus(frame, marker);
+}
+
 function isResolvedPointStatus(status) {
   return ["occluded", "out_of_frame", "unidentifiable", "excluded"].includes(status);
 }
 
 function setPointFlagValue(frame, marker, value) {
   const key = String(frame);
-  if (!value || value.status === "valid") {
+  const next = value && typeof value === "object" ? structuredClone(value) : null;
+  if (next?.status === "valid") delete next.status;
+  if (next?.status && !POINT_STATUS_LABELS[next.status]) delete next.status;
+  if (next?.review_status && !POINT_REVIEW_LABELS[next.review_status]) delete next.review_status;
+  if (next && !next.status && !next.review_status) {
+    delete next.updated_at;
+    delete next.confidence;
+    delete next.model_id;
+    delete next.model_version;
+  }
+  if (!next || Object.keys(next).length === 0) {
     if (state.pointFlags[key]) {
       delete state.pointFlags[key][marker];
       if (Object.keys(state.pointFlags[key]).length === 0) delete state.pointFlags[key];
@@ -1836,7 +1867,7 @@ function setPointFlagValue(frame, marker, value) {
     return;
   }
   if (!state.pointFlags[key]) state.pointFlags[key] = {};
-  state.pointFlags[key][marker] = structuredClone(value);
+  state.pointFlags[key][marker] = next;
 }
 
 function applySelectedPointStatus() {
@@ -1845,7 +1876,11 @@ function applySelectedPointStatus() {
   const status = els.pointStatus.value || "valid";
   const prev = pointFlagAt(frame, marker) ? structuredClone(pointFlagAt(frame, marker)) : null;
   const prevPoint = getPoint(frame, marker) ? structuredClone(getPoint(frame, marker)) : null;
-  const next = status === "valid" ? null : { status, updated_at: new Date().toISOString() };
+  const next = {
+    ...(prev || {}),
+    status,
+    updated_at: new Date().toISOString(),
+  };
   if (isResolvedPointStatus(status) && getPoint(frame, marker)) {
     const key = String(frame);
     delete state.points[key][marker];
@@ -1870,10 +1905,31 @@ function applySelectedPointStatus() {
   setStatus(`${frame}F ${marker}: ${POINT_STATUS_LABELS[status] || status}`);
 }
 
+function applySelectedPointReviewStatus() {
+  const frame = state.selected.frame ?? state.frame;
+  const marker = state.selected.marker ?? state.activeMarker;
+  const reviewStatus = els.pointReviewStatus.value || "unreviewed";
+  const prev = pointFlagAt(frame, marker) ? structuredClone(pointFlagAt(frame, marker)) : null;
+  const next = {
+    ...(prev || {}),
+    review_status: reviewStatus,
+    updated_at: new Date().toISOString(),
+  };
+  setPointFlagValue(frame, marker, next);
+  const savedNext = pointFlagAt(frame, marker) ? structuredClone(pointFlagAt(frame, marker)) : null;
+  state.undo.push({ kind: "flags", items: [{ frame, marker, prev, next: savedNext }] });
+  state.redo = [];
+  recordAudit("set_point_review_status", { frame, marker, review_status: reviewStatus });
+  touchPoints();
+  renderAll();
+  setStatus(`${frame}F ${marker}: ${POINT_REVIEW_LABELS[reviewStatus] || reviewStatus}`);
+}
+
 function markerColor(point = {}) {
   if (point.src === "ai") return "#087f8c";
   if (point.src === "track" && String(point.quality?.note || "").startsWith("tapnextpp")) return "#006d77";
   if (point.src === "track") return "#22863a";
+  if (point.src === "copy") return "#b45309";
   if (point.src === "interp") return "#8d4bd6";
   return manualPointColor();
 }
@@ -1946,7 +2002,7 @@ function setPoint(frame, marker, point, recordUndo = true) {
     state.redo = [];
   }
   row[marker] = point;
-  if (pointStatusAt(frame, marker) !== "valid") setPointFlagValue(frame, marker, null);
+  if (prevFlag) setPointFlagValue(frame, marker, null);
   if (recordUndo) recordAudit("set_point", { frame, marker, source: point.src || "" });
   touchPoints();
 }
@@ -2313,6 +2369,15 @@ function manualPointFrom(point, note) {
   };
 }
 
+function copiedPointFrom(point, note, sourceFrame) {
+  return {
+    x: normalizeCoordinate(point.x, state.videoWidth - 1),
+    y: normalizeCoordinate(point.y, state.videoHeight - 1),
+    src: "copy",
+    quality: { ...(point.quality || {}), confidence: Number(point.quality?.confidence ?? 1), note, source_frame: sourceFrame },
+  };
+}
+
 function trackPointFrom(point, note, confidence = 0.6) {
   return {
     x: normalizeCoordinate(point.x, state.videoWidth - 1),
@@ -2337,7 +2402,7 @@ function copyPreviousPoint() {
     setStatus(`${state.activeMarker} の前点が見つかりません`);
     return;
   }
-  setPoint(state.frame, state.activeMarker, manualPointFrom(source.point, `copy_from_frame_${source.frame}`));
+  setPoint(state.frame, state.activeMarker, copiedPointFrom(source.point, `copy_from_frame_${source.frame}`, source.frame));
   state.selected = { frame: state.frame, marker: state.activeMarker };
   setStatus(`${state.activeMarker} を ${source.frame}F からコピーしました`);
   renderAll();
@@ -2365,7 +2430,7 @@ function copyPreviousFramePoints() {
       entries.push({
         frame: state.frame,
         marker,
-        point: manualPointFrom(point, `copy_from_frame_${sourceFrame}`),
+        point: copiedPointFrom(point, `copy_from_frame_${sourceFrame}`, sourceFrame),
       });
     }
   }
@@ -3956,6 +4021,7 @@ function qualityGateIssues() {
   const issues = [];
   let unresolved = 0;
   let uncertain = 0;
+  let unreviewed = 0;
   let excluded = 0;
   for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
     for (const marker of state.markers) {
@@ -3963,6 +4029,7 @@ function qualityGateIssues() {
       const status = pointStatusAt(frame, marker);
       if (!point && !isResolvedPointStatus(status)) unresolved += 1;
       if (status === "uncertain") uncertain += 1;
+      if (point && pointReviewStatusAt(frame, marker) === "unreviewed") unreviewed += 1;
       if (status === "excluded") excluded += 1;
     }
   }
@@ -3978,7 +4045,8 @@ function qualityGateIssues() {
     issues.push({ severity: "error", text: `時刻CSVが範囲全体を覆っていません（${timeBasis.coverage.count}/${timeBasis.coverage.expected}F）` });
   }
   if (unresolved > 0) issues.push({ severity: "error", text: `理由未設定の欠測が ${unresolved} 点あります` });
-  if (uncertain > 0) issues.push({ severity: "warning", text: `要確認の点が ${uncertain} 点あります` });
+  if (uncertain > 0) issues.push({ severity: "warning", text: `精度注意の点が ${uncertain} 点あります` });
+  if (unreviewed > 0) issues.push({ severity: "warning", text: `研究者が未確認の点が ${unreviewed} 点あります` });
   if (excluded > 0) issues.push({ severity: "info", text: `解析除外が ${excluded} 点あります` });
   const pendingAI = aiSuggestionCounts().pending;
   if (pendingAI > 0) issues.push({ severity: "info", text: `未確認のAI候補が ${pendingAI} 点あります` });
@@ -4208,7 +4276,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity4", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity5", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -4612,6 +4680,16 @@ function drawPoint(ctx, point, marker) {
     ctx.strokeStyle = "#f59e0b";
     ctx.beginPath();
     ctx.arc(x, y, size + 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (pointReviewStatusAt(state.frame, marker) === "unreviewed") {
+    ctx.save();
+    ctx.setLineDash([2, 3]);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#087f8c";
+    ctx.beginPath();
+    ctx.arc(x, y, size + 9, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
@@ -5369,6 +5447,7 @@ function renderTable() {
       const td = document.createElement("td");
       const point = getPoint(frame, marker);
       const status = pointStatusAt(frame, marker);
+      const reviewStatus = pointReviewStatusAt(frame, marker);
       if (point) {
         const real = transformPoint(point, transform);
         td.textContent = real
@@ -5377,6 +5456,10 @@ function renderTable() {
         if (status !== "valid") {
           td.textContent += ` [${POINT_STATUS_LABELS[status] || status}]`;
           td.classList.add("point-uncertain");
+        }
+        if (reviewStatus === "unreviewed") {
+          td.textContent += ` [${POINT_REVIEW_LABELS[reviewStatus]}]`;
+          td.classList.add("point-unreviewed");
         }
       } else {
         td.classList.add("missing");
@@ -5653,6 +5736,7 @@ function renderAll() {
   const selectedFrame = state.selected.frame ?? state.frame;
   const selectedMarker = state.selected.marker ?? state.activeMarker;
   if (els.pointStatus) els.pointStatus.value = pointStatusAt(selectedFrame, selectedMarker);
+  if (els.pointReviewStatus) els.pointReviewStatus.value = pointReviewStatusAt(selectedFrame, selectedMarker);
   const constraint = trackingConstraint(state.activeMarker);
   if (els.trackingMaxMove) els.trackingMaxMove.value = String(constraint.maxMove);
   if (els.trackingDirection) els.trackingDirection.value = constraint.direction;
@@ -5753,8 +5837,12 @@ function reviewCandidates() {
     for (const marker of state.markers) {
       const point = getPoint(frame, marker);
       const status = pointStatusAt(frame, marker);
-      if (status === "uncertain" || (["track", "ai"].includes(point?.src) && Number(point.quality?.confidence || 0) < 0.6)) {
-        candidates.push({ frame, marker, reason: status === "uncertain" ? "要確認" : "低信頼候補" });
+      const reviewStatus = pointReviewStatusAt(frame, marker);
+      if ((point && reviewStatus === "unreviewed") || status === "uncertain" || (["track", "ai"].includes(point?.src) && Number(point.quality?.confidence || 0) < 0.6)) {
+        const reason = reviewStatus === "unreviewed" ? "未確認"
+          : status === "uncertain" ? "精度注意"
+            : "低信頼候補";
+        candidates.push({ frame, marker, reason });
       }
     }
   }
@@ -5926,7 +6014,7 @@ async function exportCsv() {
   for (const marker of state.markers) {
     headers.push(
       `${marker}_x`, `${marker}_y`, `${marker}_src`, `${marker}_quality_note`, `${marker}_confidence`,
-      `${marker}_track_score`, `${marker}_track_error`, `${marker}_track_disagreement`, `${marker}_status`, `${marker}_analysis_x`, `${marker}_analysis_y`,
+      `${marker}_track_score`, `${marker}_track_error`, `${marker}_track_disagreement`, `${marker}_status`, `${marker}_review_status`, `${marker}_analysis_x`, `${marker}_analysis_y`,
     );
     if (transform) headers.push(`${marker}_real_x`, `${marker}_real_y`);
   }
@@ -5954,7 +6042,7 @@ async function exportCsv() {
         Number.isFinite(Number(p?.quality?.track_score)) ? Number(p.quality.track_score).toFixed(6) : "",
         Number.isFinite(Number(p?.quality?.track_error)) ? Number(p.quality.track_error).toFixed(4) : "",
         Number.isFinite(Number(p?.quality?.track_disagreement)) ? Number(p.quality.track_disagreement).toFixed(4) : "",
-        pointStatusAt(frame, marker), analysisPoint ? formatCoord(analysisPoint.x) : "", analysisPoint ? formatCoord(analysisPoint.y) : "",
+        pointStatusAt(frame, marker), pointReviewStatusAt(frame, marker), analysisPoint ? formatCoord(analysisPoint.x) : "", analysisPoint ? formatCoord(analysisPoint.y) : "",
       );
       if (transform) {
         const real = transformPoint(p, transform);
@@ -6199,7 +6287,7 @@ async function exportRealCsv() {
     return;
   }
   const headers = ["global_frame", "time_sec", "local_frame", "local_time_sec", "time_basis", "playback_time_sec"];
-  for (const marker of state.markers) headers.push(`${marker}_real_x`, `${marker}_real_y`, `${marker}_status`);
+  for (const marker of state.markers) headers.push(`${marker}_real_x`, `${marker}_real_y`, `${marker}_status`, `${marker}_review_status`);
   headers.push("unit");
   const rows = [headers];
   for (let frame = state.trimStart; frame <= state.trimEnd; frame += 1) {
@@ -6214,7 +6302,7 @@ async function exportRealCsv() {
     ];
     for (const marker of state.markers) {
       const real = transformPoint(getPoint(frame, marker), transform);
-      row.push(real ? real.x.toFixed(6) : "", real ? real.y.toFixed(6) : "", pointStatusAt(frame, marker));
+      row.push(real ? real.x.toFixed(6) : "", real ? real.y.toFixed(6) : "", pointStatusAt(frame, marker), pointReviewStatusAt(frame, marker));
     }
     row.push(transform.unit);
     rows.push(row);
@@ -6575,6 +6663,7 @@ function digitizeStats() {
   let rangePoints = 0;
   let completeFrames = 0;
   const statusCounts = {};
+  const reviewCounts = { confirmed: 0, unreviewed: 0 };
 
   for (const row of Object.values(state.points)) {
     for (const point of Object.values(row || {})) {
@@ -6589,6 +6678,10 @@ function digitizeStats() {
       if (getPoint(frame, marker)) rangePoints += 1;
       const status = pointStatusAt(frame, marker);
       if (status !== "valid") statusCounts[status] = (statusCounts[status] || 0) + 1;
+      if (getPoint(frame, marker)) {
+        const reviewStatus = pointReviewStatusAt(frame, marker);
+        reviewCounts[reviewStatus] = (reviewCounts[reviewStatus] || 0) + 1;
+      }
     }
     if (isFrameComplete(frame)) completeFrames += 1;
   }
@@ -6604,6 +6697,7 @@ function digitizeStats() {
     marker_count: state.markers.length,
     source_counts: sourceCounts,
     status_counts: statusCounts,
+    review_counts: reviewCounts,
   };
 }
 
@@ -6633,6 +6727,7 @@ function digitizeCoordinates(transform = null) {
         quality_note: point.quality?.note || "",
         quality: point.quality || {},
         status: pointStatusAt(frame, marker),
+        review_status: pointReviewStatusAt(frame, marker),
       };
       const analysisPoint = coordinatePoint(point);
       if (analysisPoint) {
@@ -6657,7 +6752,7 @@ function digitizeSnapshot({ compact = false } = {}) {
   readCoordinateSystem();
   const transform = calibrationTransform();
   const snapshot = {
-    version: 4,
+    version: 5,
     video: {
       name: state.videoName,
       fps: state.fps,
@@ -6742,7 +6837,7 @@ function projectPayload({ compact = false } = {}) {
   const digitize = digitizeSnapshot({ compact });
   return {
     schema: PROJECT_SCHEMA,
-    project_version: 7,
+    project_version: 8,
     saved_at: new Date().toISOString(),
     video_name: state.videoName,
     video_identity: state.videoIdentity,
@@ -6889,7 +6984,7 @@ function cloudPointStore() {
       cleanRow[marker] = {
         x: Number(point.x),
         y: Number(point.y),
-        src: ["manual", "interp", "ai", "track"].includes(point.src) ? point.src : "",
+        src: ["manual", "copy", "interp", "ai", "track"].includes(point.src) ? point.src : "",
         quality: cloudScalarFields(point.quality, CLOUD_POINT_QUALITY_FIELDS),
       };
     }
@@ -6906,9 +7001,12 @@ function cloudPointFlagStore() {
     const cleanRow = {};
     for (const marker of state.markers) {
       const flag = row[marker];
-      if (!flag || !POINT_STATUS_LABELS[String(flag.status)]) continue;
+      const status = POINT_STATUS_LABELS[String(flag?.status)] ? String(flag.status) : "valid";
+      const reviewStatus = POINT_REVIEW_LABELS[String(flag?.review_status)] ? String(flag.review_status) : "";
+      if (!flag || (status === "valid" && !reviewStatus)) continue;
       cleanRow[marker] = {
-        status: String(flag.status),
+        status,
+        ...(reviewStatus ? { review_status: reviewStatus } : {}),
         ...cloudScalarFields(flag, ["updated_at", "confidence", "model_id", "model_version"]),
       };
     }
@@ -7275,7 +7373,7 @@ function portableProjectFromCloud(cloudPayload, projectId, generation) {
   const range = cloudPayload.frame_range || {};
   return {
     schema: PROJECT_SCHEMA,
-    project_version: 6,
+    project_version: 8,
     saved_at: cloudPayload.saved_at,
     video_identity: { ...signature },
     fps: Number(signature.fps) || 30,
@@ -8545,6 +8643,7 @@ els.exportCsv.addEventListener("click", exportCsv);
 els.undoBtn.addEventListener("click", undo);
 els.redoBtn.addEventListener("click", redo);
 els.applyPointStatus.addEventListener("click", applySelectedPointStatus);
+els.applyPointReviewStatus.addEventListener("click", applySelectedPointReviewStatus);
 els.runQualityGate.addEventListener("click", runQualityGate);
 els.shutdownApp.addEventListener("click", shutdownApp);
 els.copyPrevPoint.addEventListener("click", copyPreviousPoint);
