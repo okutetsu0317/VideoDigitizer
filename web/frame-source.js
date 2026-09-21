@@ -792,7 +792,9 @@
       const target = Math.max(0, Math.min(this.frameCount() - 1, Math.round(Number(frame) || 0)));
       const start = this.timeForFrame(target);
       const fallbackGap = 1 / Math.max(0.001, this.fps);
-      const following = target + 1 < this.frameCount() ? this.timeForFrame(target + 1) : this.duration + this.decoderTimeOffset;
+      const following = target + 1 < this.frameCount()
+        ? this.timeForFrame(target + 1)
+        : start + fallbackGap;
       const gap = following > start ? following - start : fallbackGap;
       const maximum = Math.max(0, this.duration - Math.min(0.000001, gap * 0.01));
       return Math.max(0, Math.min(maximum, start + gap * fraction - this.decoderTimeOffset));
@@ -892,6 +894,16 @@
       if (allowDecoderRefresh) {
         await this._replaceVideoDecoder();
         return this._seekToTimedFrame(target, false);
+      }
+      const firstDecodable = target === 0
+        ? observed.map((item) => item.actual).filter((frame) => Number.isInteger(frame) && frame > 0)
+          .sort((a, b) => a - b)[0]
+        : null;
+      if (Number.isInteger(firstDecodable)) {
+        throw new Error(
+          `フレームID 0を正確にデコードできませんでした。ブラウザは先頭ではなく`
+          + `フレームID ${firstDecodable}以降しか取得できません。動画を通常のMP4へ変換するか、デスクトップ版で開いてください${suffix}`,
+        );
       }
       throw new Error(`フレームID ${target}を正確にデコードできませんでした${suffix}`);
     }
