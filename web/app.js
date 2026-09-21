@@ -265,6 +265,9 @@ const els = {
   calibOverlayEnabled: $("calibOverlayEnabled"),
   calibUnit: $("calibUnit"),
   calibStatus: $("calibStatus"),
+  calibNextPair: $("calibNextPair"),
+  calibCorrespondenceStatus: $("calibCorrespondenceStatus"),
+  calibGeometryStatus: $("calibGeometryStatus"),
   calibCheckPixelX: $("calibCheckPixelX"),
   calibCheckPixelY: $("calibCheckPixelY"),
   calibCheckRealX: $("calibCheckRealX"),
@@ -358,6 +361,9 @@ for (const [, id] of METADATA_FIELDS) els[id] = $(id);
 for (let index = 1; index <= 4; index += 1) {
   els[`calibRealX${index}`] = $(`calibRealX${index}`);
   els[`calibRealY${index}`] = $(`calibRealY${index}`);
+  els[`calibPairFocus${index}`] = $(`calibPairFocus${index}`);
+  els[`calibPairSummary${index}`] = $(`calibPairSummary${index}`);
+  els[`calibPairConfirmed${index}`] = $(`calibPairConfirmed${index}`);
 }
 
 const state = {
@@ -489,6 +495,8 @@ const state = {
     unit: "m",
     enabled: false,
     realPointsConfirmed: false,
+    correspondenceConfirmed: [false, false, false, false],
+    activePair: 0,
   },
 };
 
@@ -962,6 +970,29 @@ function hasCalibrationPoints() {
   return calibrationPointCount() === 4;
 }
 
+function normalizedCorrespondenceConfirmation(value = state.calibration.correspondenceConfirmed) {
+  const source = Array.isArray(value) ? value : [];
+  return Array.from({ length: 4 }, (_, index) => source[index] === true);
+}
+
+function hasConfirmedCalibrationCorrespondence() {
+  return hasCalibrationPoints()
+    && normalizedCorrespondenceConfirmation().every(Boolean);
+}
+
+function resetCalibrationCorrespondence(activePair = 0) {
+  state.calibration.correspondenceConfirmed = [false, false, false, false];
+  state.calibration.activePair = Math.max(0, Math.min(3, Math.round(Number(activePair) || 0)));
+}
+
+function invalidateCalibrationCorrespondence(index = null) {
+  const confirmed = normalizedCorrespondenceConfirmation();
+  if (Number.isInteger(index) && index >= 0 && index < 4) confirmed[index] = false;
+  else confirmed.fill(false);
+  state.calibration.correspondenceConfirmed = confirmed;
+  if (Number.isInteger(index) && index >= 0 && index < 4) state.calibration.activePair = index;
+}
+
 function readCalibrationRealPoints() {
   const points = [];
   for (let index = 1; index <= 4; index += 1) {
@@ -1010,10 +1041,145 @@ function writeCalibrationSettings(calibration = {}) {
   state.calibration.enabled = Boolean(calibration.enabled);
   state.calibration.realPointsConfirmed = calibration.realPointsConfirmed === true
     || calibration.real_points_confirmed === true;
+  state.calibration.correspondenceConfirmed = normalizedCorrespondenceConfirmation(
+    calibration.correspondenceConfirmed ?? calibration.correspondence_confirmed ?? [],
+  );
+  state.calibration.activePair = Math.max(0, Math.min(3, Math.round(Number(calibration.activePair) || 0)));
   if (els.calibEnabled) els.calibEnabled.checked = state.calibration.enabled;
   if (els.calibRealConfirmed) els.calibRealConfirmed.checked = state.calibration.realPointsConfirmed;
   if (els.calibUnit) els.calibUnit.value = state.calibration.unit;
   writeCalibrationRealPoints(state.calibration.realPoints);
+}
+
+function calibrationPointSetMetrics(points) {
+  if (!Array.isArray(points) || points.length !== 4) return null;
+  const values = points.map((point) => ({ x: Number(point?.x), y: Number(point?.y) }));
+  if (values.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return null;
+  const xs = values.map((point) => point.x);
+  const ys = values.map((point) => point.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  const diagonal = Math.hypot(width, height);
+  const diagonalSquared = diagonal * diagonal;
+  if (diagonal <= 1e-12) {
+    return { minPairRatio: 0, minTriangleRatio: 0, areaRatio: 0, aspectRatio: Infinity };
+  }
+
+  let minPairDistance = Infinity;
+  let minTriangleArea2 = Infinity;
+  for (let a = 0; a < values.length; a += 1) {
+    for (let b = a + 1; b < values.length; b += 1) {
+      minPairDistance = Math.min(minPairDistance, Math.hypot(values[a].x - values[b].x, values[a].y - values[b].y));
+      for (let c = b + 1; c < values.length; c += 1) {
+        const area2 = Math.abs(
+          (values[b].x - values[a].x) * (values[c].y - values[a].y)
+          - (values[b].y - values[a].y) * (values[c].x - values[a].x),
+        );
+        minTriangleArea2 = Math.min(minTriangleArea2, area2);
+      }
+    }
+  }
+
+  const sorted = values.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (origin, a, b) => (
+    (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x)
+  );
+  const halfHull = (items) => {
+    const result = [];
+    for (const point of items) {
+      while (result.length >= 2 && cross(result.at(-2), result.at(-1), point) <= 0) result.pop();
+      result.push(point);
+    }
+    return result;
+  };
+  const hull = [...halfHull(sorted).slice(0, -1), ...halfHull(sorted.slice().reverse()).slice(0, -1)];
+  let hullArea2 = 0;
+  for (let index = 0; index < hull.length; index += 1) {
+    const current = hull[index];
+    const next = hull[(index + 1) % hull.length];
+    hullArea2 += current.x * next.y - current.y * next.x;
+  }
+  const hullArea = Math.abs(hullArea2) / 2;
+  const shortSide = Math.min(width, height);
+  const longSide = Math.max(width, height);
+  return {
+    minPairRatio: minPairDistance / diagonal,
+    minTriangleRatio: minTriangleArea2 / diagonalSquared,
+    areaRatio: hullArea / diagonalSquared,
+    aspectRatio: shortSide <= 1e-12 ? Infinity : longSide / shortSide,
+  };
+}
+
+function calibrationPointSetIssues(points, label) {
+  const metrics = calibrationPointSetMetrics(points);
+  if (!metrics) return [{ severity: "error", text: `${label}の4点を確認できません` }];
+  const issues = [];
+  if (metrics.minPairRatio < 0.005) issues.push({ severity: "error", text: `${label}に重複または極端に近い点があります` });
+  else if (metrics.minPairRatio < 0.03) issues.push({ severity: "warning", text: `${label}に近すぎる点があります` });
+  if (metrics.minTriangleRatio < 0.001) issues.push({ severity: "error", text: `${label}のうち3点がほぼ一直線です` });
+  else if (metrics.minTriangleRatio < 0.02) issues.push({ severity: "warning", text: `${label}の3点が一直線に近く、換算が不安定です` });
+  if (metrics.areaRatio < 0.001) issues.push({ severity: "error", text: `${label}が面積を持つ四辺形になっていません` });
+  else if (metrics.areaRatio < 0.02 || metrics.aspectRatio > 20) {
+    issues.push({ severity: "warning", text: `${label}の配置が細長すぎます` });
+  }
+  return issues;
+}
+
+function calibrationGeometryAssessment() {
+  if (!hasCalibrationPoints()) return { status: "missing", issues: [], text: "配置診断: 4点を読み込んでください" };
+  const imagePoints = state.calibration.points.map((point) => lensCorrectPoint(point));
+  const realPoints = readCalibrationRealPoints();
+  const issues = [
+    ...calibrationPointSetIssues(imagePoints, "画像側4点"),
+    ...calibrationPointSetIssues(realPoints, "実寸側4点"),
+  ];
+  const status = issues.some((issue) => issue.severity === "error")
+    ? "error" : issues.some((issue) => issue.severity === "warning") ? "warning" : "good";
+  const label = status === "good" ? "良好" : status === "warning" ? "注意" : "使用不可";
+  return {
+    status,
+    issues,
+    text: issues.length ? `配置診断: ${label}\n${issues.map((issue) => `・${issue.text}`).join("\n")}` : `配置診断: ${label}`,
+  };
+}
+
+function focusCalibrationPair(index) {
+  state.calibration.activePair = Math.max(0, Math.min(3, Math.round(Number(index) || 0)));
+  if (hasCalibrationPoints()) els.calibOverlayEnabled.checked = true;
+  renderCalibrationCorrespondence();
+  draw();
+}
+
+function renderCalibrationCorrespondence() {
+  const confirmed = normalizedCorrespondenceConfirmation();
+  state.calibration.correspondenceConfirmed = confirmed;
+  const realPoints = readCalibrationRealPoints();
+  const hasPoints = hasCalibrationPoints();
+  for (let index = 0; index < 4; index += 1) {
+    const imagePoint = state.calibration.points[index];
+    const realPoint = realPoints[index];
+    const summary = imagePoint && realPoint
+      ? `画像 (${formatCoord(imagePoint.x)}, ${formatCoord(imagePoint.y)}) → 実寸 (${realPoint.x}, ${realPoint.y}) ${state.calibration.unit}`
+      : "画像 - → 実寸 -";
+    els[`calibPairSummary${index + 1}`].textContent = summary;
+    els[`calibPairConfirmed${index + 1}`].checked = confirmed[index];
+    els[`calibPairConfirmed${index + 1}`].disabled = !hasPoints || !realPoint;
+    document.querySelector(`[data-calibration-pair-row="${index}"]`)?.classList.toggle("active", index === state.calibration.activePair);
+    for (const element of document.querySelectorAll(`[data-calibration-pair="${index}"]`)) {
+      element.classList.toggle("calibration-pair-active", index === state.calibration.activePair);
+    }
+  }
+  const confirmedCount = confirmed.filter(Boolean).length;
+  const status = !hasPoints ? "missing" : confirmedCount === 4 ? "good" : "warning";
+  els.calibCorrespondenceStatus.dataset.status = status;
+  els.calibCorrespondenceStatus.textContent = !hasPoints
+    ? "対応確認: 4点を読み込んでください"
+    : confirmedCount === 4
+      ? "対応確認: P1〜P4を確認済み"
+      : `対応確認: ${confirmedCount}/4。動画上の点と実寸座標が同じP番号か確認してください`;
+  const geometry = calibrationGeometryAssessment();
+  els.calibGeometryStatus.dataset.status = geometry.status;
+  els.calibGeometryStatus.textContent = geometry.text;
 }
 
 function readLensSettings() {
@@ -1124,7 +1290,9 @@ function calibrationTransform() {
   readLensSettings();
   if (!state.calibration.enabled) return null;
   if (!state.calibration.realPointsConfirmed) return null;
+  if (!hasConfirmedCalibrationCorrespondence()) return null;
   if (!hasCalibrationPoints() || state.calibration.realPoints.length !== 4) return null;
+  if (calibrationGeometryAssessment().status === "error") return null;
   const matrix = [];
   const vector = [];
   for (let index = 0; index < 4; index += 1) {
@@ -1377,11 +1545,19 @@ function updateStatus() {
   els.frameInfo.textContent = `フレームID ${state.frame} / ${Math.max(0, state.frameCount - 1)}（${countLabel}） 範囲ID ${state.trimStart}-${state.trimEnd}`;
   const calibrationText = hasCalibrationPoints() ? "4点法 4/4" : `4点法 ${calibrationPointCount()}/4`;
   els.markerInfo.textContent = `マーカー ${state.activeMarker} / ${calibrationText}`;
+  renderCalibrationCorrespondence();
   if (els.calibStatus) {
+    const geometry = calibrationGeometryAssessment();
     els.calibStatus.textContent = hasCalibrationTransform()
-      ? `実長換算: 有効 (${state.calibration.unit})`
+      ? `実長換算: 有効${geometry.status === "warning" ? "・配置注意" : ""} (${state.calibration.unit})`
       : state.calibration.enabled && !state.calibration.realPointsConfirmed
         ? "実長換算: 実寸値の確認が必要"
+        : state.calibration.enabled && !hasCalibrationPoints()
+          ? "実長換算: 4点未設定"
+        : state.calibration.enabled && !hasConfirmedCalibrationCorrespondence()
+          ? "実長換算: P1〜P4の対応確認が必要"
+          : state.calibration.enabled && geometry.status === "error"
+            ? "実長換算: 4点配置を修正してください"
         : state.calibration.enabled ? "実長換算: 4点未設定" : "実長換算: 無効";
   }
   els.activeMarkerOverlay.textContent = state.activeMarker || "-";
@@ -3808,8 +3984,16 @@ function qualityGateIssues() {
   if (pendingAI > 0) issues.push({ severity: "info", text: `未確認のAI候補が ${pendingAI} 点あります` });
   if (state.calibration.enabled && !state.calibration.realPointsConfirmed) {
     issues.push({ severity: "error", text: "4点法の実寸値が確認済みになっていません" });
-  } else if (state.calibration.enabled && !calibrationTransform()) {
-    issues.push({ severity: "error", text: "4点法が有効ですが変換を計算できません" });
+  } else if (state.calibration.enabled && !hasCalibrationPoints()) {
+    issues.push({ severity: "error", text: "4点法が有効ですが画像側の4点が未設定です" });
+  } else if (state.calibration.enabled && !hasConfirmedCalibrationCorrespondence()) {
+    issues.push({ severity: "error", text: "4点法のP1〜P4対応がすべて確認済みになっていません" });
+  } else if (state.calibration.enabled) {
+    const geometry = calibrationGeometryAssessment();
+    for (const issue of geometry.issues) issues.push({ severity: issue.severity, text: `4点法: ${issue.text}` });
+    if (geometry.status !== "error" && !calibrationTransform()) {
+      issues.push({ severity: "error", text: "4点法が有効ですが変換を計算できません" });
+    }
   }
   const jumps = suspiciousJumps();
   if (jumps.length > 0) issues.push({ severity: "warning", text: `急な座標移動の候補が ${jumps.length} 点あります` });
@@ -4024,7 +4208,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity3", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity4", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -4606,14 +4790,15 @@ function drawCalibrationOverlay(ctx) {
   for (let index = 0; index < state.calibration.points.length; index += 1) {
     const point = state.calibration.points[index];
     const pos = sourceToCanvas(point);
+    const active = index === state.calibration.activePair;
     ctx.lineWidth = 4;
     ctx.strokeStyle = "#ffffff";
-    ctx.fillStyle = "#2364aa";
+    ctx.fillStyle = active ? "#f2b134" : "#2364aa";
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, pointSize() + 5, 0, Math.PI * 2);
+    ctx.arc(pos.x, pos.y, pointSize() + (active ? 9 : 5), 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = active ? "#171a1d" : "#ffffff";
     ctx.fillText(`P${index + 1}`, pos.x + pointSize() + 7, pos.y);
   }
   ctx.restore();
@@ -6508,6 +6693,8 @@ function digitizeSnapshot({ compact = false } = {}) {
       points: state.calibration.points,
       real_points: state.calibration.realPoints,
       real_points_confirmed: state.calibration.realPointsConfirmed,
+      correspondence_confirmed: normalizedCorrespondenceConfirmation(),
+      geometry_assessment: calibrationGeometryAssessment(),
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       transform: transform ? { h: transform.h, unit: transform.unit } : null,
@@ -6572,6 +6759,8 @@ function projectPayload({ compact = false } = {}) {
       points: state.calibration.points,
       real_points: state.calibration.realPoints,
       real_points_confirmed: state.calibration.realPointsConfirmed,
+      correspondence_confirmed: normalizedCorrespondenceConfirmation(),
+      geometry_assessment: digitize.calibration.geometry_assessment,
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       lens: state.lens,
@@ -6761,6 +6950,7 @@ function cloudDigitizePayload() {
       })),
       real_points: state.calibration.realPoints.slice(0, 4).map((point) => ({ x: Number(point.x), y: Number(point.y) })),
       real_points_confirmed: state.calibration.realPointsConfirmed,
+      correspondence_confirmed: normalizedCorrespondenceConfirmation(),
       unit: state.calibration.unit,
       enabled: state.calibration.enabled,
       lens: structuredClone(state.lens),
@@ -7546,6 +7736,7 @@ function importCalibrationFile(file) {
         points,
         enabled: true,
       };
+      resetCalibrationCorrespondence();
       writeCalibrationSettings(state.calibration);
       state.tableSnapshot = "";
       markDirty();
@@ -7740,6 +7931,10 @@ function loadProject(file) {
         realPoints: normalizeRealCalibrationPoints(savedCalibration.real_points || savedCalibration.realPoints),
         realPointsConfirmed: savedCalibration.real_points_confirmed === true
           || savedCalibration.realPointsConfirmed === true,
+        correspondenceConfirmed: normalizedCorrespondenceConfirmation(
+          savedCalibration.correspondence_confirmed || savedCalibration.correspondenceConfirmed,
+        ),
+        activePair: 0,
         unit: String(savedCalibration.unit || "m"),
         enabled: Boolean(savedCalibration.enabled),
       };
@@ -8450,6 +8645,7 @@ for (let index = 1; index <= 4; index += 1) {
   for (const axis of ["X", "Y"]) {
     els[`calibReal${axis}${index}`].addEventListener("change", () => {
       els.calibRealConfirmed.checked = false;
+      invalidateCalibrationCorrespondence(index - 1);
       readCalibrationSettings();
       state.tableSnapshot = "";
       markDirty();
@@ -8459,13 +8655,43 @@ for (let index = 1; index <= 4; index += 1) {
     });
     els[`calibReal${axis}${index}`].addEventListener("input", () => {
       els.calibRealConfirmed.checked = false;
+      invalidateCalibrationCorrespondence(index - 1);
       readCalibrationSettings();
       updateStatus();
       renderTable();
       draw();
     });
   }
+  els[`calibPairFocus${index}`].addEventListener("click", () => focusCalibrationPair(index - 1));
+  els[`calibPairConfirmed${index}`].addEventListener("change", () => {
+    const confirmed = normalizedCorrespondenceConfirmation();
+    confirmed[index - 1] = hasCalibrationPoints() && els[`calibPairConfirmed${index}`].checked;
+    state.calibration.correspondenceConfirmed = confirmed;
+    if (confirmed[index - 1]) {
+      const next = confirmed.findIndex((value, candidate) => !value && candidate > index - 1);
+      if (next >= 0) state.calibration.activePair = next;
+    } else {
+      state.calibration.activePair = index - 1;
+    }
+    recordAudit("confirm_calibration_correspondence", { point: index, confirmed: confirmed[index - 1] });
+    markDirty();
+    updateStatus();
+    draw();
+  });
 }
+els.calibNextPair.addEventListener("click", () => {
+  const confirmed = normalizedCorrespondenceConfirmation();
+  const start = state.calibration.activePair;
+  let next = -1;
+  for (let offset = 1; offset <= 4; offset += 1) {
+    const candidate = (start + offset) % 4;
+    if (!confirmed[candidate]) {
+      next = candidate;
+      break;
+    }
+  }
+  focusCalibrationPair(next >= 0 ? next : (start + 1) % 4);
+});
 els.calibRealConfirmed.addEventListener("change", () => {
   if (els.calibRealConfirmed.checked) {
     const points = readCalibrationRealPoints();
@@ -8492,6 +8718,7 @@ els.calibEnabled.addEventListener("change", () => {
 });
 els.calibUnit.addEventListener("change", () => {
   els.calibRealConfirmed.checked = false;
+  invalidateCalibrationCorrespondence();
   readCalibrationSettings();
   state.tableSnapshot = "";
   markDirty();
@@ -8501,6 +8728,7 @@ els.calibUnit.addEventListener("change", () => {
 });
 els.calibUnit.addEventListener("input", () => {
   els.calibRealConfirmed.checked = false;
+  invalidateCalibrationCorrespondence();
   readCalibrationSettings();
   updateStatus();
   renderTable();

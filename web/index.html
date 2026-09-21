@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-integrity3" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-integrity3" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-integrity3" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-integrity3" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-integrity4" />
+    <link rel="icon" href="./icon-192.png?v=2.2.0-integrity4" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-integrity4" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.0-integrity4" />
     <script src="./native-bridge.js?v=2.2.0-ios1"></script>
   </head>
   <body>
@@ -364,39 +364,49 @@
               <span id="calibStatus" class="small">4点法: 未設定</span>
             </div>
             <div class="calibration-real-grid">
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="0">
                 P1 X
                 <input id="calibRealX1" type="number" step="0.000001" value="0" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="0">
                 P1 Y
                 <input id="calibRealY1" type="number" step="0.000001" value="0" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="1">
                 P2 X
                 <input id="calibRealX2" type="number" step="0.000001" value="1" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="1">
                 P2 Y
                 <input id="calibRealY2" type="number" step="0.000001" value="0" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="2">
                 P3 X
                 <input id="calibRealX3" type="number" step="0.000001" value="1" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="2">
                 P3 Y
                 <input id="calibRealY3" type="number" step="0.000001" value="1" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="3">
                 P4 X
                 <input id="calibRealX4" type="number" step="0.000001" value="0" />
               </label>
-              <label class="field-block">
+              <label class="field-block" data-calibration-pair="3">
                 P4 Y
                 <input id="calibRealY4" type="number" step="0.000001" value="1" />
               </label>
             </div>
+            <h3 class="subhead">4点の対応確認</h3>
+            <div id="calibCorrespondenceList" class="calibration-correspondence-list">
+              <div class="calibration-pair-row" data-calibration-pair-row="0"><button id="calibPairFocus1" type="button">P1を表示</button><span id="calibPairSummary1">画像 - → 実寸 -</span><label><input id="calibPairConfirmed1" type="checkbox" />確認</label></div>
+              <div class="calibration-pair-row" data-calibration-pair-row="1"><button id="calibPairFocus2" type="button">P2を表示</button><span id="calibPairSummary2">画像 - → 実寸 -</span><label><input id="calibPairConfirmed2" type="checkbox" />確認</label></div>
+              <div class="calibration-pair-row" data-calibration-pair-row="2"><button id="calibPairFocus3" type="button">P3を表示</button><span id="calibPairSummary3">画像 - → 実寸 -</span><label><input id="calibPairConfirmed3" type="checkbox" />確認</label></div>
+              <div class="calibration-pair-row" data-calibration-pair-row="3"><button id="calibPairFocus4" type="button">P4を表示</button><span id="calibPairSummary4">画像 - → 実寸 -</span><label><input id="calibPairConfirmed4" type="checkbox" />確認</label></div>
+            </div>
+            <button id="calibNextPair" type="button">次の未確認点</button>
+            <div id="calibCorrespondenceStatus" class="calibration-check-status" data-status="missing">対応確認: 4点を読み込んでください</div>
+            <div id="calibGeometryStatus" class="calibration-check-status" data-status="missing">配置診断: 4点を読み込んでください</div>
             <h3 class="subhead">検証点</h3>
             <div class="calibration-real-grid">
               <label class="field-block">画像X<input id="calibCheckPixelX" type="number" step="0.001" /></label>
@@ -903,12 +913,12 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-integrity3"></script>
-    <script src="./pwa.js?v=2.2.0-integrity3"></script>
-    <script src="./ai-pose.js?v=2.2.0-integrity3"></script>
-    <script src="./point-tracker.js?v=2.2.0-integrity3"></script>
-    <script src="./step-analysis-core.js?v=2.2.0-integrity3"></script>
-    <script src="./step-analysis.js?v=2.2.0-integrity3"></script>
-    <script src="./app.js?v=2.2.0-integrity3"></script>
+    <script src="./frame-source.js?v=2.2.0-integrity4"></script>
+    <script src="./pwa.js?v=2.2.0-integrity4"></script>
+    <script src="./ai-pose.js?v=2.2.0-integrity4"></script>
+    <script src="./point-tracker.js?v=2.2.0-integrity4"></script>
+    <script src="./step-analysis-core.js?v=2.2.0-integrity4"></script>
+    <script src="./step-analysis.js?v=2.2.0-integrity4"></script>
+    <script src="./app.js?v=2.2.0-integrity4"></script>
   </body>
 </html>

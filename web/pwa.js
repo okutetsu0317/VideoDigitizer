@@ -3,7 +3,7 @@
 
   const DB_NAME = "video_digitizer_local";
   const STORE_NAME = "projects";
-  const BUILD_ID = "2.2.0-integrity3";
+  const BUILD_ID = "2.2.0-integrity4";
 
   function openDatabase() {
     if (!global.indexedDB) return Promise.resolve(null);
