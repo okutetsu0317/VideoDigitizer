@@ -4276,7 +4276,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity6", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity7", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;

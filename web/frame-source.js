@@ -901,8 +901,9 @@
         : null;
       if (Number.isInteger(firstDecodable)) {
         throw new Error(
-          `フレームID 0を正確にデコードできませんでした。ブラウザは先頭ではなく`
-          + `フレームID ${firstDecodable}以降しか取得できません。動画を通常のMP4へ変換するか、デスクトップ版で開いてください${suffix}`,
+          `フレームID 0を正確にデコードできませんでした。先頭を要求しましたが、ブラウザは`
+          + `フレームID ${firstDecodable}を返しました。動画先頭の圧縮フレームを復号できない可能性があります。`
+          + `動画を通常のMP4へ変換するか、デスクトップ版で開いてください${suffix}`,
         );
       }
       throw new Error(`フレームID ${target}を正確にデコードできませんでした${suffix}`);

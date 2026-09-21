@@ -394,7 +394,7 @@ class BrowserFrameSourceTests(unittest.TestCase):
             video.onSeek = () => { video.present(3/30); video.dispatchEvent(new Event('seeked')); };
             const source = new BrowserFrameSource(new Blob([]), 'blob:test-video', video, canvas, 30,
               {frameCount:10, timestamps:Float64Array.from({length:10}, (_,i)=>i/30)});
-            await assert.rejects(source._seekToTimedFrame(0, false), /フレームID 3以降しか取得できません/);
+            await assert.rejects(source._seekToTimedFrame(0, false), /ブラウザはフレームID 3を返しました/);
             assert.equal(source.presentedFrame, null);
             console.log(JSON.stringify({ timers:timers.size }));
         """)

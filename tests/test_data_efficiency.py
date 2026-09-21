@@ -239,8 +239,8 @@ class DataEfficiencyTests(unittest.TestCase):
         html = (ROOT / "web_viewer" / "index.html").read_text(encoding="utf-8")
         worker = (ROOT / "web_viewer" / "service-worker.js").read_text(encoding="utf-8")
 
-        self.assertIn("2.2.0-integrity6", html)
-        self.assertIn("2.2.0-integrity6", worker)
+        self.assertIn("2.2.0-integrity7", html)
+        self.assertIn("2.2.0-integrity7", worker)
 
     def test_pwa_updates_without_losing_active_unsaved_work(self):
         pwa = (ROOT / "web_viewer" / "pwa.js").read_text(encoding="utf-8")
