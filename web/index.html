@@ -6,10 +6,10 @@
     <meta name="theme-color" content="#20252b" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'" />
     <title>動画デジタイズ</title>
-    <link rel="manifest" href="./manifest.webmanifest?v=2.2.0-integrity7" />
-    <link rel="icon" href="./icon-192.png?v=2.2.0-integrity7" />
-    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.0-integrity7" />
-    <link rel="stylesheet" href="./styles.css?v=2.2.0-integrity7" />
+    <link rel="manifest" href="./manifest.webmanifest?v=2.2.1-integrity1" />
+    <link rel="icon" href="./icon-192.png?v=2.2.1-integrity1" />
+    <link rel="apple-touch-icon" href="./icon-192.png?v=2.2.1-integrity1" />
+    <link rel="stylesheet" href="./styles.css?v=2.2.1-integrity1" />
     <script src="./native-bridge.js?v=2.2.0-ios1"></script>
   </head>
   <body>
@@ -101,6 +101,7 @@
               <button id="overwriteProject" type="button">上書き保存</button>
               <button id="saveProjectPackage" type="button">パッケージ保存</button>
               <button id="exportCsv" type="button">CSV出力</button>
+              <button id="convertBrowserVideo" type="button" hidden>ブラウザ用MP4作成</button>
               <label class="file-button">4点法読込<input id="calibrationFile" type="file" accept=".json,.csv,.tsv,.txt,text/*,application/json" /></label>
               <label class="file-button">時刻CSV<input id="timestampFile" type="file" accept=".csv,.tsv,.txt,text/*" /></label>
               <button id="shutdownApp" class="danger-button" type="button">アプリ終了</button>
@@ -921,12 +922,12 @@
         </section>
       </section>
     </main>
-    <script src="./frame-source.js?v=2.2.0-integrity7"></script>
-    <script src="./pwa.js?v=2.2.0-integrity7"></script>
-    <script src="./ai-pose.js?v=2.2.0-integrity7"></script>
-    <script src="./point-tracker.js?v=2.2.0-integrity7"></script>
-    <script src="./step-analysis-core.js?v=2.2.0-integrity7"></script>
-    <script src="./step-analysis.js?v=2.2.0-integrity7"></script>
-    <script src="./app.js?v=2.2.0-integrity7"></script>
+    <script src="./frame-source.js?v=2.2.1-integrity1"></script>
+    <script src="./pwa.js?v=2.2.1-integrity1"></script>
+    <script src="./ai-pose.js?v=2.2.1-integrity1"></script>
+    <script src="./point-tracker.js?v=2.2.1-integrity1"></script>
+    <script src="./step-analysis-core.js?v=2.2.1-integrity1"></script>
+    <script src="./step-analysis.js?v=2.2.1-integrity1"></script>
+    <script src="./app.js?v=2.2.1-integrity1"></script>
   </body>
 </html>

@@ -36,5 +36,5 @@ const html = `<!doctype html>
 <main><div class="intro"><h1>使い方ガイド</h1><p>動画を開き、調べたい位置に点を打ち、座標を保存します。まずは短い範囲で試してみましょう。</p><p class="muted">Web版を中心に説明しています。Macアプリ版だけの機能は本文に明記しています。スクリーンショットの動画は操作確認用のサンプルです。</p><div class="quick-links"><a href="#start">はじめて使う</a><a href="#calibration">4点法</a><a href="#save">保存・再開</a><a href="#open">困ったとき</a></div></div>
 <p id="noResults" hidden>該当する項目がありません。「保存」「ズーム」など短い機能名で探すか、検索をクリアしてください。</p>
 ${groups.map(([title,ids])=>`<section class="guide-group"><h2>${title}</h2>${ids.map(id=>topic(articles.find(article=>article.id===id))).join('')}</section>`).join('')}
-<footer><p class="muted">更新：2026年9月20日 · 重要な作業はプロジェクトファイルでも保存してください。</p><a href="./privacy.html">プライバシーポリシー</a></footer></main></div></body></html>`;
+<footer><p class="muted">更新：2026年9月21日 · 重要な作業はプロジェクトファイルでも保存してください。</p><a href="./privacy.html">プライバシーポリシー</a></footer></main></div></body></html>`;
 await writeFile(new URL('help.html',webRoot),html+'\n');

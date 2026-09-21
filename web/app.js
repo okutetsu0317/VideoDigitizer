@@ -87,7 +87,7 @@ const MARKER_TEMPLATES = {
 };
 const CUSTOM_MARKER_TEMPLATE_KEY = "video_digitizer_custom_marker_template_v1";
 const WORKSPACE_PRESET_KEY = "video_digitizer_workspace_preset_v1";
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const AI_SUGGESTION_VERSION = 1;
 const FRAME_LATENCY_SAMPLE_LIMIT = 200;
 const FRAME_SLIDER_DEBOUNCE_MS = 45;
@@ -137,6 +137,7 @@ function createCloudProjectId() {
 const els = {
   frameImage: $("frameImage"),
   openVideoButton: $("openVideoButton"),
+  convertBrowserVideo: $("convertBrowserVideo"),
   videoFile: $("videoFile"),
   iosChooseVideoButton: $("iosChooseVideoButton"),
   iosRecordVideoButton: $("iosRecordVideoButton"),
@@ -580,6 +581,7 @@ function updateAppMode() {
     ? "処理: iOS端末内"
     : usesBrowserFrameSource() ? "処理: ブラウザ内" : "処理: ローカルアプリ";
   els.shutdownApp.hidden = usesBrowserFrameSource();
+  if (els.convertBrowserVideo) els.convertBrowserVideo.hidden = usesBrowserFrameSource() || IS_IOS_APP;
 }
 
 function frameDisplayMode() {
@@ -884,6 +886,41 @@ async function shutdownApp() {
     }, 250);
   } catch (error) {
     setStatus(`終了できませんでした: ${error.message}`);
+  }
+}
+
+async function convertCurrentVideoForBrowser() {
+  if (usesBrowserFrameSource() || IS_IOS_APP) {
+    setStatus("ブラウザ用MP4作成はMacアプリ版で利用できます");
+    return;
+  }
+  if (!state.ready) {
+    setStatus("先に変換する動画を開いてください");
+    return;
+  }
+  els.convertBrowserVideo.disabled = true;
+  els.openVideoButton.disabled = true;
+  setStatus("ブラウザ用MP4へ変換しています。元動画は変更しません…");
+  try {
+    const response = await fetch(`./api/convert-video?${sessionQuery()}`, {
+      method: "POST",
+      cache: "no-store",
+    });
+    if (response.status === 499) {
+      setStatus("ブラウザ用MP4の作成をキャンセルしました");
+      return;
+    }
+    if (!response.ok) throw new Error((await response.text()).trim() || "変換に失敗しました");
+    const result = await response.json();
+    setStatus(
+      `ブラウザ用MP4を保存しました: ${result.name} `
+      + `(${result.frame_count}フレーム / ${result.width}x${result.height})`,
+    );
+  } catch (error) {
+    setStatus(`ブラウザ用MP4を作成できませんでした: ${error.message}`);
+  } finally {
+    els.convertBrowserVideo.disabled = false;
+    els.openVideoButton.disabled = false;
   }
 }
 
@@ -4276,7 +4313,7 @@ function showAnalysisAggregatePending() {
 function ensureAnalysisAggregateWorker() {
   if (state.analysisAggregateWorker) return state.analysisAggregateWorker;
   if (state.analysisAggregateWorkerDisabled || typeof Worker !== "function") return null;
-  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.0-integrity7", document.baseURI));
+  const worker = new Worker(new URL("./analysis-aggregate-worker.js?v=2.2.1-integrity1", document.baseURI));
   worker.onmessage = ({ data }) => {
     if (data?.id !== state.analysisAggregateRequest) {
       state.analysisAggregateStaleResults += 1;
@@ -8640,6 +8677,7 @@ els.saveProjectCopy.addEventListener("click", () => {
 els.saveProjectPackage.addEventListener("click", saveProjectPackage);
 els.overwriteProject.addEventListener("click", overwriteProject);
 els.exportCsv.addEventListener("click", exportCsv);
+els.convertBrowserVideo?.addEventListener("click", convertCurrentVideoForBrowser);
 els.undoBtn.addEventListener("click", undo);
 els.redoBtn.addEventListener("click", redo);
 els.applyPointStatus.addEventListener("click", applySelectedPointStatus);
